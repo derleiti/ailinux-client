@@ -1,0 +1,114 @@
+name: Build Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger bei Version-Tags (v3.0.2, etc.)
+  workflow_dispatch:  # Manueller Trigger
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+    
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller pillow pywinpty
+        pip install PyQt6 PyQt6-WebEngine httpx websockets keyring cryptography pyte
+    
+    - name: Extract Version
+      id: version
+      shell: bash
+      run: |
+        VERSION=$(grep -E "^VERSION" ailinux_client/version.py | cut -d'"' -f2)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+    
+    - name: Build Windows Executable
+      run: |
+        pyinstaller `
+          --name="AILinux-Client" `
+          --onefile `
+          --windowed `
+          --icon="icon.ico" `
+          --add-data="ailinux_client/ui;ailinux_client/ui" `
+          --add-data="ailinux_client/translations;ailinux_client/translations" `
+          --add-data="ailinux_client/assets;ailinux_client/assets" `
+          --add-data="icon.jpg;." `
+          --hidden-import=PyQt6 `
+          --hidden-import=PyQt6.QtWidgets `
+          --hidden-import=PyQt6.QtCore `
+          --hidden-import=PyQt6.QtGui `
+          --hidden-import=PyQt6.QtWebEngineWidgets `
+          --hidden-import=httpx `
+          --hidden-import=websockets `
+          --hidden-import=keyring `
+          --hidden-import=cryptography `
+          --hidden-import=PIL `
+          --hidden-import=winpty `
+          --clean `
+          --noconfirm `
+          ailinux_client/main.py
+    
+    - name: Create Installer (Optional - Inno Setup)
+      run: |
+        # Für später: Inno Setup Installer erstellen
+        echo "Standalone .exe erstellt"
+    
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AILinux-Client-Windows-${{ steps.version.outputs.version }}
+        path: dist/AILinux-Client.exe
+    
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/AILinux-Client.exe
+        name: AILinux Client ${{ steps.version.outputs.version }}
+        body: |
+          ## AILinux Client for Windows
+          
+          ### Installation
+          1. Download `AILinux-Client.exe`
+          2. Ausführen (kein Installer nötig)
+          
+          ### Anforderungen
+          - Windows 10 (1809+) oder Windows 11
+          - Internet-Verbindung für API-Zugriff
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Optional: Linux Build parallel
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    
+    - name: Build Linux
+      run: |
+        pip install pyinstaller pillow PyQt6 PyQt6-WebEngine httpx websockets keyring cryptography pyte
+        pyinstaller --onefile --name=ailinux-client ailinux_client/main.py
+    
+    - name: Upload Linux Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AILinux-Client-Linux
+        path: dist/ailinux-client

@@ -1,0 +1,85 @@
+# ============================================================================
+# AILINUX CLIENT - GIT IGNORE
+# ============================================================================
+
+# Environment files (NEVER commit!)
+.env
+*.env
+!.env.example
+triforce.env
+config/*.env
+!config/*.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Local config
+local_config.py
+user_settings.json
+
+# Build artifacts
+*.deb
+*.rpm
+*.exe
+*.dmg
+*.AppImage
+
+# Credentials & Secrets
+*.pem
+*.key
+*.crt
+secrets/
+credentials/

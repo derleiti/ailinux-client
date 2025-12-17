@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=AILinux Client
+Comment=KI-gestützter Desktop-Client für AILinux
+GenericName=AI Assistant
+Exec=ailinux-client
+Icon=ailinux-client
+Terminal=false
+Type=Application
+Categories=Development;Utility;Network;
+Keywords=ai;llm;chat;assistant;ollama;claude;gemini;nova;
+StartupNotify=true
+StartupWMClass=ailinux-client
