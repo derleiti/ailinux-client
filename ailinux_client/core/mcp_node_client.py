@@ -202,21 +202,116 @@ class MCPNodeClient:
 
         return None
 
-    async def connect(self):
-        """Verbindung zum MCP Node herstellen mit User-Auth und Session-ID"""
-        # Check if disabled due to repeated failures
-        if self._disabled:
-            logger.debug("MCP Node connection disabled (endpoint not available)")
+async def connect(self):
+    """Verbindung zum MCP Node herstellen mit mTLS"""
+    import ssl
+
+    if self._disabled:
+        logger.debug("MCP Node connection disabled")
+        return False
+
+    if self._auth_failures >= self._max_auth_failures:
+        logger.warning(f"MCP Node disabled after {self._auth_failures} auth failures")
+        self._disabled = True
+        return False
+
+    # === mTLS SSL Context ===
+    ssl_ctx = None
+    client_cert = os.getenv("AILINUX_CLIENT_CERT")
+    ca_cert = os.getenv("AILINUX_CA_CERT")
+    wss_port = os.getenv("AILINUX_WSS_PORT", "")
+
+    if client_cert and ca_cert and os.path.exists(client_cert) and os.path.exists(ca_cert):
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ssl_ctx.load_cert_chain(client_cert)
+        ssl_ctx.load_verify_locations(ca_cert)
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_REQUIRED
+        logger.info(f"mTLS enabled: {client_cert}")
+
+    # Get user info
+    user_id = ""
+    tier = "free"
+    if self.api_client:
+        user_id = self.api_client.user_id or ""
+        tier = self.api_client.tier or "free"
+    else:
+        cred_file = Path.home() / ".config" / "ailinux" / "credentials.json"
+        if cred_file.exists():
+            try:
+                creds = json.loads(cred_file.read_text())
+                user_id = creds.get("user_id", "")
+                tier = creds.get("tier", "free")
+            except: pass
+
+    # WebSocket URL
+    import urllib.parse
+
+    if wss_port and ssl_ctx:
+        # mTLS auf Port 44433 - kein Token nötig!
+        ws_base = self.server_url.replace("https://", "").replace("http://", "")
+        params = urllib.parse.urlencode({
+            "session_id": self.session_id,
+            "machine_id": self.machine_id,
+            "user_id": user_id,
+            "tier": tier,
+            "client_version": "1.0.0",
+            "mode": "telemetry",
+        })
+        ws_url = f"wss://{ws_base}:{wss_port}/mcp?{params}"
+    else:
+        # Fallback: Token-Auth auf Standard-Route
+        if not self.auth_token:
+            self.auth_token = self.get_auth_token()
+        if not self.auth_token:
+            self.auth_token = await self._get_legacy_token()
+        if not self.auth_token:
+            logger.error("No auth token available")
             return False
-        
-        # Check if we've had too many auth failures
-        if self._auth_failures >= self._max_auth_failures:
-            logger.warning(f"MCP Node disabled after {self._auth_failures} auth failures. "
-                          "Server endpoint may not exist.")
-            self._disabled = True
-            if self.on_error:
-                self.on_error("MCP Node endpoint not available on server")
-            return False
+
+        params = urllib.parse.urlencode({
+            "token": self.auth_token,
+            "session_id": self.session_id,
+            "machine_id": self.machine_id,
+            "user_id": user_id,
+            "tier": tier,
+            "client_version": "1.0.0",
+            "mode": "telemetry",
+        })
+        ws_url = f"{self.ws_url}/v1/mcp/node/connect?{params}"
+
+    try:
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx) if ssl_ctx else None
+        self.aio_session = aiohttp.ClientSession(connector=connector)
+        self.websocket = await self.aio_session.ws_connect(
+            ws_url,
+            heartbeat=30,
+            timeout=aiohttp.ClientTimeout(total=60),
+            ssl=ssl_ctx
+        )
+
+        logger.info(f"Connected to MCP Node: {ws_url.split('?')[0]} ({'mTLS' if ssl_ctx else 'Token'})")
+        self._running = True
+        self.state.connected = True
+        self.state.user_id = user_id
+        self.state.tier = tier
+
+        asyncio.create_task(self._message_loop())
+        asyncio.create_task(self._ping_loop())
+
+        await self._send_client_info()
+        await self._send_tool_list()
+
+        self._reconnect_delay = 5
+        self._auth_failures = 0
+        self._disabled = False
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Connection failed: {e}")
+        await self._close_session()
+        return False
         
         # Token holen (User-Token oder Legacy)
         # Nur neu holen wenn noch kein Token
@@ -262,6 +357,7 @@ class MCPNodeClient:
             "client_version": "1.0.0",
             "mode": "telemetry",
         })
+
         ws_url = f"{self.ws_url}/v1/mcp/node/connect?{params}"
 
         try:

@@ -10,6 +10,9 @@ import os
 os.environ['AILINUX_TOKEN'] = ''
 os.environ['AILINUX_TIER'] = 'pro'
 os.environ['AILINUX_SERVER'] = 'https://api.ailinux.me'
+os.environ['AILINUX_WSS_PORT'] = '44433'
+os.environ['AILINUX_CLIENT_CERT'] = os.path.expanduser('~/.ailinux/certs/client.pem')
+os.environ['AILINUX_CA_CERT'] = os.path.expanduser('~/.ailinux/certs/ca.crt')
 
 sys.path.insert(0, '/home/zombie/projects/ailinux-client')
 from ailinux_client.core.mcp_stdio_server import MCPStdioServer

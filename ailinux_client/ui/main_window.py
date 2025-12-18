@@ -128,26 +128,43 @@ class MCPNodeThread(QThread):
             self.mcp_client.on_error = on_error
             self.mcp_client.on_tool_call = on_tool_call
 
-            # Connect with auto-reconnect
+            # Connect with auto-reconnect (but respect disabled state)
             while self.running:
                 try:
+                    # Check if client is disabled (too many failures)
+                    if self.mcp_client._disabled:
+                        logger.info("MCP Node disabled (server endpoint not available)")
+                        self.error.emit("MCP Node endpoint not available")
+                        break
+                    
                     success = await self.mcp_client.connect()
                     if success:
                         logger.info(f"MCP Node connected (session: {self.mcp_client.session_id})")
 
                         # Wait while connected
                         while self.running and self.mcp_client.is_connected():
-                            await asyncio.sleep(0.1)
+                            await asyncio.sleep(0.5)
                     else:
+                        # Connection failed - check if we should stop
+                        if self.mcp_client._disabled:
+                            break
                         self.error.emit("Connection failed")
 
+                except asyncio.CancelledError:
+                    break
                 except Exception as e:
                     logger.error(f"MCP Node error: {e}")
                     self.error.emit(str(e))
                     self.disconnected.emit()
 
-                if self.running:
-                    await asyncio.sleep(5)  # Reconnect delay
+                # Use the client's reconnect delay (exponential backoff)
+                if self.running and not self.mcp_client._disabled:
+                    delay = self.mcp_client._reconnect_delay
+                    await asyncio.sleep(delay)
+            
+            # Cleanup
+            if self.mcp_client:
+                await self.mcp_client.disconnect()
 
         asyncio.run(connect_loop())
 
@@ -874,23 +891,33 @@ class MainWindow(QMainWindow):
             # Initialize shortcut manager with this window as parent
             self.shortcut_manager = get_shortcut_manager(self)
 
-            # F1-F4: Widget toggles (Global)
-            self.shortcut_manager.register("F1", self._toggle_browser, ShortcutContext.GLOBAL,
+            # ====== GLOBAL SHORTCUTS ======
+            # Widget toggles: Ctrl+F1-F4 (avoid conflicts with widget-specific F-keys)
+            # F2 = Rename in File Browser, so we use Ctrl+F2 for global toggle
+            self.shortcut_manager.register("Ctrl+F1", self._toggle_browser, ShortcutContext.GLOBAL,
                                           "Toggle Browser", "View")
-            self.shortcut_manager.register("F2", self._toggle_file_browser, ShortcutContext.GLOBAL,
+            self.shortcut_manager.register("Ctrl+F2", self._toggle_file_browser, ShortcutContext.GLOBAL,
                                           "Toggle File Browser", "View")
-            self.shortcut_manager.register("F3", self._toggle_chat, ShortcutContext.GLOBAL,
+            self.shortcut_manager.register("Ctrl+F3", self._toggle_chat, ShortcutContext.GLOBAL,
                                           "Toggle Chat", "View")
-            self.shortcut_manager.register("F4", self._toggle_terminal, ShortcutContext.GLOBAL,
+            self.shortcut_manager.register("Ctrl+F4", self._toggle_terminal, ShortcutContext.GLOBAL,
                                           "Toggle Terminal", "View")
 
-            # F5: Lock screen
+            # System shortcuts (F5, F11 are standard and don't conflict)
             self.shortcut_manager.register("F5", self._toggle_lock_screen, ShortcutContext.GLOBAL,
                                           "Lock Screen", "System")
-
-            # F11: Fullscreen
             self.shortcut_manager.register("F11", self._toggle_fullscreen, ShortcutContext.GLOBAL,
                                           "Toggle Fullscreen", "View")
+            
+            # Quick focus shortcuts (alternative to Ctrl+F1-F4)
+            self.shortcut_manager.register("Alt+1", self._toggle_browser, ShortcutContext.GLOBAL,
+                                          "Focus Browser", "Navigation")
+            self.shortcut_manager.register("Alt+2", self._toggle_file_browser, ShortcutContext.GLOBAL,
+                                          "Focus File Browser", "Navigation")
+            self.shortcut_manager.register("Alt+3", self._toggle_chat, ShortcutContext.GLOBAL,
+                                          "Focus Chat", "Navigation")
+            self.shortcut_manager.register("Alt+4", self._toggle_terminal, ShortcutContext.GLOBAL,
+                                          "Focus Terminal", "Navigation")
 
             # Alt+Tab: Cycle through widgets
             self.shortcut_manager.register("Alt+Tab", self._cycle_widget_focus, ShortcutContext.GLOBAL,
@@ -908,7 +935,7 @@ class MainWindow(QMainWindow):
             self.shortcut_manager.register("Alt+O", lambda: self._launch_cli_agent("opencode"), ShortcutContext.GLOBAL,
                                           "Launch OpenCode CLI", "CLI Agents")
 
-            # ====== Browser-specific shortcuts ======
+            # ====== Browser-specific shortcuts (Chrome/Firefox-like) ======
             self.shortcut_manager.register("Ctrl+T", self._browser_new_tab, ShortcutContext.BROWSER,
                                           "New Tab", "Browser")
             self.shortcut_manager.register("Ctrl+W", self._browser_close_tab, ShortcutContext.BROWSER,
@@ -921,8 +948,34 @@ class MainWindow(QMainWindow):
                                           "Forward", "Browser")
             self.shortcut_manager.register("Ctrl+L", self._browser_focus_address, ShortcutContext.BROWSER,
                                           "Focus Address Bar", "Browser")
+            # Tab navigation (Ctrl+Tab, Ctrl+1-9)
+            self.shortcut_manager.register("Ctrl+Tab", self._browser_next_tab, ShortcutContext.BROWSER,
+                                          "Next Tab", "Browser")
+            self.shortcut_manager.register("Ctrl+Shift+Tab", self._browser_prev_tab, ShortcutContext.BROWSER,
+                                          "Previous Tab", "Browser")
+            # Quick tab access (Ctrl+1 to Ctrl+9)
+            for i in range(1, 10):
+                self.shortcut_manager.register(f"Ctrl+{i}", 
+                                              lambda idx=i-1: self._browser_goto_tab(idx), 
+                                              ShortcutContext.BROWSER,
+                                              f"Go to Tab {i}", "Browser")
+            # Additional browser shortcuts
+            self.shortcut_manager.register("Ctrl+D", self._browser_bookmark, ShortcutContext.BROWSER,
+                                          "Add Bookmark", "Browser")
+            self.shortcut_manager.register("Ctrl+H", self._browser_history, ShortcutContext.BROWSER,
+                                          "Show History", "Browser")
+            self.shortcut_manager.register("Ctrl+Shift+T", self._browser_reopen_tab, ShortcutContext.BROWSER,
+                                          "Reopen Closed Tab", "Browser")
+            self.shortcut_manager.register("Ctrl+F", self._browser_find, ShortcutContext.BROWSER,
+                                          "Find in Page", "Browser")
+            self.shortcut_manager.register("Escape", self._browser_stop, ShortcutContext.BROWSER,
+                                          "Stop Loading", "Browser")
 
             # ====== Terminal-specific shortcuts ======
+            self.shortcut_manager.register("Ctrl+T", self._terminal_new_tab, ShortcutContext.TERMINAL,
+                                          "New Terminal Tab", "Terminal")
+            self.shortcut_manager.register("Ctrl+W", self._terminal_close_tab, ShortcutContext.TERMINAL,
+                                          "Close Terminal Tab", "Terminal")
             self.shortcut_manager.register("Ctrl+Shift+C", self._terminal_copy, ShortcutContext.TERMINAL,
                                           "Copy", "Terminal")
             self.shortcut_manager.register("Ctrl+Shift+V", self._terminal_paste, ShortcutContext.TERMINAL,
@@ -931,6 +984,10 @@ class MainWindow(QMainWindow):
                                           "Clear Screen", "Terminal")
             self.shortcut_manager.register("Ctrl+C", self._terminal_interrupt, ShortcutContext.TERMINAL,
                                           "Interrupt/Cancel", "Terminal")
+            self.shortcut_manager.register("Ctrl+Tab", self._terminal_next_tab, ShortcutContext.TERMINAL,
+                                          "Next Terminal Tab", "Terminal")
+            self.shortcut_manager.register("Ctrl+Shift+Tab", self._terminal_prev_tab, ShortcutContext.TERMINAL,
+                                          "Previous Terminal Tab", "Terminal")
 
             # ====== File Browser-specific shortcuts ======
             self.shortcut_manager.register("Ctrl+N", self._filebrowser_new_folder, ShortcutContext.FILE_BROWSER,
@@ -1086,14 +1143,21 @@ class MainWindow(QMainWindow):
 
     def _setup_shortcuts_fallback(self):
         """Fallback shortcut setup using QShortcut directly"""
-        # F1-F4: Widget toggles
-        QShortcut(QKeySequence("F1"), self, self._toggle_browser)
-        QShortcut(QKeySequence("F2"), self, self._toggle_file_browser)
-        QShortcut(QKeySequence("F3"), self, self._toggle_chat)
-        QShortcut(QKeySequence("F4"), self, self._toggle_terminal)
+        # Ctrl+F1-F4: Widget toggles (avoid conflict with widget-specific F-keys)
+        QShortcut(QKeySequence("Ctrl+F1"), self, self._toggle_browser)
+        QShortcut(QKeySequence("Ctrl+F2"), self, self._toggle_file_browser)
+        QShortcut(QKeySequence("Ctrl+F3"), self, self._toggle_chat)
+        QShortcut(QKeySequence("Ctrl+F4"), self, self._toggle_terminal)
+        
+        # Alt+1-4: Quick focus (alternative)
+        QShortcut(QKeySequence("Alt+1"), self, self._toggle_browser)
+        QShortcut(QKeySequence("Alt+2"), self, self._toggle_file_browser)
+        QShortcut(QKeySequence("Alt+3"), self, self._toggle_chat)
+        QShortcut(QKeySequence("Alt+4"), self, self._toggle_terminal)
 
-        # F5: Lock screen
+        # F5: Lock screen, F11: Fullscreen (standard, no conflicts)
         QShortcut(QKeySequence("F5"), self, self._toggle_lock_screen)
+        QShortcut(QKeySequence("F11"), self, self._toggle_fullscreen)
 
         # CLI agent shortcuts
         QShortcut(QKeySequence("Alt+C"), self, lambda: self._launch_cli_agent("claude"))
@@ -1487,6 +1551,61 @@ class MainWindow(QMainWindow):
             self.browser_widget.url_bar.setFocus()
             self.browser_widget.url_bar.selectAll()
 
+    def _browser_next_tab(self):
+        """Switch to next browser tab"""
+        if hasattr(self, 'browser_widget') and hasattr(self.browser_widget, 'tab_widget'):
+            tw = self.browser_widget.tab_widget
+            next_idx = (tw.currentIndex() + 1) % tw.count()
+            tw.setCurrentIndex(next_idx)
+
+    def _browser_prev_tab(self):
+        """Switch to previous browser tab"""
+        if hasattr(self, 'browser_widget') and hasattr(self.browser_widget, 'tab_widget'):
+            tw = self.browser_widget.tab_widget
+            prev_idx = (tw.currentIndex() - 1) % tw.count()
+            tw.setCurrentIndex(prev_idx)
+
+    def _browser_goto_tab(self, index: int):
+        """Switch to specific browser tab by index (0-8)"""
+        if hasattr(self, 'browser_widget') and hasattr(self.browser_widget, 'tab_widget'):
+            tw = self.browser_widget.tab_widget
+            if index < tw.count():
+                tw.setCurrentIndex(index)
+            elif index == 8:  # Ctrl+9 goes to last tab
+                tw.setCurrentIndex(tw.count() - 1)
+
+    def _browser_bookmark(self):
+        """Add current page to bookmarks"""
+        if hasattr(self, 'browser_widget') and hasattr(self.browser_widget, 'toggle_bookmark'):
+            self.browser_widget.toggle_bookmark()
+
+    def _browser_history(self):
+        """Show browser history"""
+        if hasattr(self, 'browser_widget') and hasattr(self.browser_widget, 'show_history'):
+            self.browser_widget.show_history()
+
+    def _browser_reopen_tab(self):
+        """Reopen last closed tab"""
+        if hasattr(self, 'browser_widget') and hasattr(self.browser_widget, 'reopen_closed_tab'):
+            self.browser_widget.reopen_closed_tab()
+
+    def _browser_find(self):
+        """Open find in page dialog"""
+        if hasattr(self, 'browser_widget'):
+            tab = self.browser_widget.current_tab()
+            if tab and hasattr(tab, 'web_view'):
+                # Trigger browser's built-in find (Ctrl+F)
+                tab.web_view.page().triggerAction(
+                    tab.web_view.page().WebAction.FindInPage
+                )
+
+    def _browser_stop(self):
+        """Stop loading current page"""
+        if hasattr(self, 'browser_widget'):
+            tab = self.browser_widget.current_tab()
+            if tab and hasattr(tab, 'web_view'):
+                tab.web_view.stop()
+
     # Terminal shortcuts
     def _terminal_copy(self):
         """Copy selection from terminal"""
@@ -1518,6 +1637,44 @@ class MainWindow(QMainWindow):
         elif hasattr(self.terminal_widget, 'send_input'):
             # Send Ctrl+C character
             self.terminal_widget.send_input('\x03')
+
+    def _terminal_new_tab(self):
+        """Open new terminal tab (Ctrl+T)"""
+        if hasattr(self.terminal_widget, 'add_tab'):
+            self.terminal_widget.add_tab()
+        elif hasattr(self.terminal_widget, 'new_tab'):
+            self.terminal_widget.new_tab()
+        else:
+            logger.debug("Terminal widget doesn't support tabs")
+
+    def _terminal_close_tab(self):
+        """Close current terminal tab (Ctrl+W)"""
+        if hasattr(self.terminal_widget, 'close_current_tab'):
+            self.terminal_widget.close_current_tab()
+        elif hasattr(self.terminal_widget, 'close_tab'):
+            self.terminal_widget.close_tab()
+        else:
+            logger.debug("Terminal widget doesn't support closing tabs")
+
+    def _terminal_next_tab(self):
+        """Switch to next terminal tab (Ctrl+Tab)"""
+        if hasattr(self.terminal_widget, 'next_tab'):
+            self.terminal_widget.next_tab()
+        elif hasattr(self.terminal_widget, 'tab_widget'):
+            tw = self.terminal_widget.tab_widget
+            if tw.count() > 1:
+                next_idx = (tw.currentIndex() + 1) % tw.count()
+                tw.setCurrentIndex(next_idx)
+
+    def _terminal_prev_tab(self):
+        """Switch to previous terminal tab (Ctrl+Shift+Tab)"""
+        if hasattr(self.terminal_widget, 'prev_tab'):
+            self.terminal_widget.prev_tab()
+        elif hasattr(self.terminal_widget, 'tab_widget'):
+            tw = self.terminal_widget.tab_widget
+            if tw.count() > 1:
+                prev_idx = (tw.currentIndex() - 1) % tw.count()
+                tw.setCurrentIndex(prev_idx)
 
     # File Browser shortcuts
     def _filebrowser_new_folder(self):
@@ -2039,33 +2196,116 @@ CLI Agents: {len(self.cli_agents)}
         logger.info("Screen locked")
 
     def _show_unlock_dialog(self):
-        """Show password dialog to unlock screen"""
+        """Show styled password dialog to unlock screen with system credentials"""
         import pwd
         import os
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout
 
         # Get current username
         username = pwd.getpwuid(os.getuid()).pw_name
 
-        # Show password input dialog
-        from PyQt6.QtWidgets import QInputDialog
-
-        password, ok = QInputDialog.getText(
-            self._lock_overlay,
-            "Unlock Screen",
-            f"Enter password for {username}:",
-            QLineEdit.EchoMode.Password
-        )
-
-        if ok and password:
-            # Verify password using PAM
-            if self._verify_password(username, password):
-                self._unlock_screen()
-            else:
-                QMessageBox.warning(
-                    self._lock_overlay,
-                    "Authentication Failed",
-                    "Incorrect password. Please try again."
-                )
+        # Create custom styled unlock dialog
+        dialog = QDialog(self._lock_overlay)
+        dialog.setWindowTitle("🔓 Unlock Screen")
+        dialog.setFixedSize(350, 220)
+        dialog.setStyleSheet("""
+            QDialog {
+                background: rgba(15, 15, 30, 0.95);
+                border: 1px solid rgba(96, 165, 250, 0.3);
+                border-radius: 16px;
+            }
+            QLabel {
+                color: #e0e0e0;
+                background: transparent;
+            }
+            QLineEdit {
+                background: rgba(30, 30, 50, 0.9);
+                color: #e0e0e0;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-size: 14px;
+            }
+            QLineEdit:focus {
+                border-color: #60a5fa;
+            }
+            QPushButton {
+                background: #3b82f6;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 24px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #2563eb;
+            }
+            QPushButton:pressed {
+                background: #1d4ed8;
+            }
+            QPushButton#cancelBtn {
+                background: rgba(255, 255, 255, 0.1);
+                color: #a0a0a0;
+            }
+            QPushButton#cancelBtn:hover {
+                background: rgba(255, 255, 255, 0.15);
+                color: #e0e0e0;
+            }
+        """)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(16)
+        layout.setContentsMargins(24, 24, 24, 24)
+        
+        # User icon and name
+        user_label = QLabel(f"🔐 {username}")
+        user_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #60a5fa;")
+        user_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(user_label)
+        
+        # Password field
+        password_input = QLineEdit()
+        password_input.setPlaceholderText("Enter your password...")
+        password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(password_input)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setObjectName("cancelBtn")
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        unlock_btn = QPushButton("🔓 Unlock")
+        unlock_btn.setDefault(True)
+        btn_layout.addWidget(unlock_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # Handle unlock
+        def try_unlock():
+            password = password_input.text()
+            if password:
+                if self._verify_password(username, password):
+                    dialog.accept()
+                    self._unlock_screen()
+                else:
+                    # Shake animation for wrong password
+                    password_input.setStyleSheet(password_input.styleSheet() + "border-color: #ef4444;")
+                    password_input.clear()
+                    password_input.setPlaceholderText("Wrong password - try again")
+                    QTimer.singleShot(2000, lambda: password_input.setPlaceholderText("Enter your password..."))
+        
+        unlock_btn.clicked.connect(try_unlock)
+        password_input.returnPressed.connect(try_unlock)
+        
+        # Focus password field
+        password_input.setFocus()
+        
+        dialog.exec()
 
     def _verify_password(self, username: str, password: str) -> bool:
         """Verify user password using PAM authentication"""
@@ -2643,6 +2883,10 @@ CLI Agents: {len(self.cli_agents)}
 
             <h3>Terminal Shortcuts</h3>
             <table>
+            <tr><td>Ctrl+T</td><td>New Terminal Tab</td></tr>
+            <tr><td>Ctrl+W</td><td>Close Terminal Tab</td></tr>
+            <tr><td>Ctrl+Tab</td><td>Next Terminal Tab</td></tr>
+            <tr><td>Ctrl+Shift+Tab</td><td>Previous Terminal Tab</td></tr>
             <tr><td>Tab</td><td>Tab completion</td></tr>
             <tr><td>Ctrl+C</td><td>Interrupt (SIGINT)</td></tr>
             <tr><td>Ctrl+D</td><td>EOF / Exit</td></tr>

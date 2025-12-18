@@ -750,6 +750,7 @@ class HardwareDetector:
             'thread_count': info.recommended_threads,
             'enable_vsync': info.gpu_acceleration,
             'cache_size_mb': min(256, info.memory.total_mb // 16),
+            'vulkan_available': info.vulkan_available,
         }
 
         # Performance tier
@@ -759,6 +760,14 @@ class HardwareDetector:
             hints['performance_tier'] = 'medium'
         else:
             hints['performance_tier'] = 'low'
+        
+        # Vulkan recommendation: Use if available AND high-performance tier
+        # Vulkan has better performance but may have driver issues on some systems
+        hints['recommend_vulkan'] = (
+            info.vulkan_available and 
+            hints['performance_tier'] == 'high' and
+            any(g.vendor in ('NVIDIA', 'AMD') for g in info.gpus)
+        )
 
         return hints
 

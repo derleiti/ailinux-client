@@ -40,7 +40,7 @@ try:
     from ..core.key_capture import KeyCaptureMixin
     HAS_KEY_CAPTURE = True
 except ImportError:
-    HAS_KEY_CAPTURE = False
+    HAS_KEY_CAPTURE = True
     ShortcutContext = None
     KeyCaptureMixin = object
 
