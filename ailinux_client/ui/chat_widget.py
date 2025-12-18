@@ -316,21 +316,21 @@ class SearchableModelSelector(QWidget):
         self.info_label.setText(f"{total} models available • Scroll to browse")
 
     def _on_item_clicked(self, item: QListWidgetItem):
-        """Handle single click - select model and close popup"""
+        """Handle single click - highlight"""
+        model = item.data(Qt.ItemDataRole.UserRole)
+        if model and not model.get('is_header'):
+            self.model_list.setCurrentItem(item)
+
+    def _on_item_double_clicked(self, item: QListWidgetItem):
+        """Handle double click - select"""
         model = item.data(Qt.ItemDataRole.UserRole)
         if model and not model.get('is_header') and not model.get('locked'):
             self._select_model(model)
             self._hide_popup()
-            logger.debug(f"Model selected: {model.get('name')}")
-
-    def _on_item_double_clicked(self, item: QListWidgetItem):
-        """Handle double click - same as single click for consistency"""
-        self._on_item_clicked(item)
 
     def _select_model(self, model: Dict[str, Any]):
         """Select a model"""
         self.current_model = model
-        logger.info(f"Model selected: {model.get('id')} ({model.get('name')})")
 
         # Update button text
         name = model.get('name', 'Unknown')
@@ -455,16 +455,8 @@ class ChatWorker(QThread):
 
     def run(self):
         import time
-        logger.debug(f"ChatWorker.run: Starting request (model={self.model})")
-        
-        if not self.api_client:
-            logger.error("ChatWorker.run: No API client!")
-            self.error.emit("Kein API Client verfügbar")
-            return
-            
         try:
             start_time = time.time()
-            logger.debug(f"ChatWorker.run: Calling api_client.chat()")
             result = self.api_client.chat(
                 message=self.message,
                 model=self.model,
@@ -472,10 +464,8 @@ class ChatWorker(QThread):
             )
             # Add response time to result
             result["response_time_ms"] = int((time.time() - start_time) * 1000)
-            logger.info(f"ChatWorker.run: Success in {result['response_time_ms']}ms")
             self.finished.emit(result)
         except Exception as e:
-            logger.error(f"ChatWorker.run: Exception: {e}", exc_info=True)
             self.error.emit(str(e))
 
 
@@ -993,20 +983,6 @@ class ChatWidget(QWidget):
         """Send message"""
         message = self.input_field.get_text()
         if not message:
-            logger.debug("_send_message: Empty message, ignoring")
-            return
-
-        logger.info(f"_send_message: Sending message ({len(message)} chars)")
-
-        # Check if API client is available and authenticated
-        if not self.api_client:
-            logger.error("_send_message: No API client available")
-            self._add_message("error", "Nicht verbunden. Bitte neu starten.")
-            return
-
-        if not self.api_client.is_authenticated():
-            logger.warning("_send_message: Not authenticated")
-            self._add_message("error", "Nicht eingeloggt. Bitte zuerst anmelden.")
             return
 
         # Check for MCP commands first (before AI processing)
@@ -1019,7 +995,6 @@ class ChatWidget(QWidget):
         # Get selected model from new selector
         model_data = self.model_selector.get_current_model_data()
         model = self.model_selector.get_current_model()
-        logger.debug(f"_send_message: Using model: {model}")
 
         # Check if model is locked (tier-restricted)
         if model_data and model_data.get('locked'):
@@ -1063,27 +1038,23 @@ class ChatWidget(QWidget):
             system_prompt = DEFAULT_SYSTEM_PROMPT
         
         # Start worker
-        logger.info(f"_send_message: Starting ChatWorker (model={model})")
         self.worker = ChatWorker(self.api_client, message, model, system_prompt)
         self.worker.finished.connect(self._on_response)
         self.worker.error.connect(self._on_error)
         self.worker.start()
-        logger.debug("_send_message: Worker started")
 
     def _on_response(self, result: dict):
         """Handle response and update statusbar"""
-        logger.info(f"_on_response: Received response")
         self.input_field.setEnabled(True)
         self.send_btn.setEnabled(True)
 
         response = result.get("response", "")
         model = result.get("model", "unknown")
-        tokens_used = result.get("tokens_used") or 0  # Handle None
-        response_time_ms = result.get("response_time_ms") or 0  # Handle None
-        logger.debug(f"_on_response: model={model}, tokens={tokens_used}, time={response_time_ms}ms")
+        tokens_used = result.get("tokens_used", 0)
+        response_time_ms = result.get("response_time_ms", 0)
 
         # Track token usage for cloud models
-        if tokens_used and tokens_used > 0:
+        if tokens_used > 0:
             tier_mgr = get_tier_manager(self.api_client)
             tier_mgr.track_tokens(tokens_used)
 
@@ -1096,7 +1067,6 @@ class ChatWidget(QWidget):
 
     def _on_error(self, error: str):
         """Handle error"""
-        logger.error(f"_on_error: {error}")
         self.input_field.setEnabled(True)
         self.send_btn.setEnabled(True)
 

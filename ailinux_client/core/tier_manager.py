@@ -376,33 +376,6 @@ class TierManager:
         if self._token_limit == 0 or self._ollama_unlimited:
             return -1
         return max(0, self._token_limit - self._token_usage)
-
-    # =========================================================================
-    # Request Tracking (backwards compatibility)
-    # =========================================================================
-
-    def has_request_limit(self) -> bool:
-        """Check if there's a request limit (for backwards compatibility)"""
-        # Pro and Enterprise have no limits
-        if self.tier in (Tier.PRO, Tier.ENTERPRISE):
-            return False
-        # Ollama unlimited means no request limit
-        if self._ollama_unlimited:
-            return False
-        return self._token_limit > 0
-
-    def get_remaining_requests(self) -> int:
-        """Get remaining requests (approximation based on tokens)"""
-        remaining_tokens = self.get_remaining_tokens()
-        if remaining_tokens < 0:  # Unlimited
-            return 999999
-        # Assume average 500 tokens per request
-        return max(0, remaining_tokens // 500)
-
-    def track_request(self):
-        """Track a request (for backwards compatibility)"""
-        # We don't track requests separately, only tokens
-        pass
     
     def get_usage_info(self) -> Dict[str, Any]:
         """Usage-Informationen"""
