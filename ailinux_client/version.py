@@ -4,8 +4,8 @@ AILinux Client Version
 Automatisches Changelog-System
 """
 
-VERSION = "4.0.0"
-BUILD_DATE = "20251217"
+VERSION = "4.0.1"
+BUILD_DATE = "20251218"
 
 # Changelog - wird automatisch bei jedem Release erweitert
 CHANGELOG = """

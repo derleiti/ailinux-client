@@ -7,7 +7,7 @@ import sys
 import os
 
 # Environment setzen
-os.environ['AILINUX_TOKEN'] = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci0yYTljZDhlMTcyMWE3ZWFkIiwicm9sZSI6InBybyIsInN1YiI6Im1ya3NsZWl0ZXJtYW5uQGdtYWlsLmNvbSIsImV4cCI6MTc2ODUxODMzOCwiaWF0IjoxNzY1OTI2MzM4fQ.ALFbh9Z6buFidTkaGC343gw_u_A6ezndMLxXmT5Ab2w'
+os.environ['AILINUX_TOKEN'] = ''
 os.environ['AILINUX_TIER'] = 'pro'
 os.environ['AILINUX_SERVER'] = 'https://api.ailinux.me'
 

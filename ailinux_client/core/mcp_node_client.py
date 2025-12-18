@@ -32,6 +32,7 @@ import aiohttp
 from dotenv import load_dotenv
 
 from .local_mcp import local_mcp, MCPToolResult
+from .backend_error_logger import log_backend_error
 
 logger = logging.getLogger("ailinux.mcp_node_client")
 
@@ -122,6 +123,9 @@ class MCPNodeClient:
         self.aio_session: Optional[aiohttp.ClientSession] = None
         self._running = False
         self._reconnect_delay = 5
+        self._auth_failures = 0  # Track consecutive auth failures
+        self._max_auth_failures = 3  # Stop retrying after this many 403s
+        self._disabled = False  # Set to True if endpoint doesn't exist
 
         # Callbacks
         self.on_connected: Optional[Callable] = None
@@ -200,6 +204,20 @@ class MCPNodeClient:
 
     async def connect(self):
         """Verbindung zum MCP Node herstellen mit User-Auth und Session-ID"""
+        # Check if disabled due to repeated failures
+        if self._disabled:
+            logger.debug("MCP Node connection disabled (endpoint not available)")
+            return False
+        
+        # Check if we've had too many auth failures
+        if self._auth_failures >= self._max_auth_failures:
+            logger.warning(f"MCP Node disabled after {self._auth_failures} auth failures. "
+                          "Server endpoint may not exist.")
+            self._disabled = True
+            if self.on_error:
+                self.on_error("MCP Node endpoint not available on server")
+            return False
+        
         # Token holen (User-Token oder Legacy)
         # Nur neu holen wenn noch kein Token
         if not self.auth_token:
@@ -256,6 +274,7 @@ class MCPNodeClient:
 
             logger.info(f"Connected to MCP Node: {self.ws_url} (session: {self.session_id})")
             self._running = True
+            self.state.connected = True
             self.state.user_id = user_id
             self.state.tier = tier
 
@@ -269,13 +288,77 @@ class MCPNodeClient:
             await self._send_client_info()
             await self._send_tool_list()
 
+            # Reset counters on successful connection
+            self._reconnect_delay = 5
+            self._auth_failures = 0
+            self._disabled = False
+
             return True
 
-        except Exception as e:
+        except aiohttp.WSServerHandshakeError as e:
+            # 403, 401, etc. - Don't spam retries for auth errors
             logger.error(f"Connection failed: {e}")
+            await self._close_session()
+            
+            # Log to backend error file
+            log_backend_error(
+                endpoint="/v1/mcp/node/connect",
+                method="WEBSOCKET",
+                status_code=e.status,
+                error_message=str(e),
+                user_id=user_id,
+                tier=tier
+            )
+            
+            if e.status == 403:
+                # Track auth failures
+                self._auth_failures += 1
+                remaining = self._max_auth_failures - self._auth_failures
+                
+                if remaining > 0:
+                    # Increase backoff significantly
+                    self._reconnect_delay = min(self._reconnect_delay * 2, 300)  # Max 5 min
+                    logger.warning(f"MCP Node auth failed (403). {remaining} retries left. "
+                                  f"Next retry in {self._reconnect_delay}s.")
+                else:
+                    logger.warning("MCP Node endpoint not available (403). Disabling connection.")
+                    self._disabled = True
+                    
+            elif e.status == 401:
+                self._reconnect_delay = 60  # Wait 1 min for token refresh
+                logger.warning("MCP Node token invalid (401). Token may need refresh.")
+            
             if self.on_error:
                 self.on_error(str(e))
             return False
+            
+        except Exception as e:
+            logger.error(f"Connection failed: {e}")
+            await self._close_session()
+            
+            # Log connection error
+            log_backend_error(
+                endpoint="/v1/mcp/node/connect",
+                method="WEBSOCKET",
+                status_code=0,
+                error_message=f"Connection error: {e}",
+                user_id=user_id,
+                tier=tier
+            )
+            
+            if self.on_error:
+                self.on_error(str(e))
+            return False
+    
+    async def _close_session(self):
+        """Properly close aiohttp session"""
+        if self.websocket and not self.websocket.closed:
+            await self.websocket.close()
+        if self.aio_session and not self.aio_session.closed:
+            await self.aio_session.close()
+        self.websocket = None
+        self.aio_session = None
+        self.state.connected = False
 
     async def _send_client_info(self):
         """Sendet Client-Informationen an Server"""
@@ -324,6 +407,7 @@ class MCPNodeClient:
     
     async def _message_loop(self):
         """Empfängt und verarbeitet Nachrichten vom Server"""
+        should_reconnect = False
         try:
             async for msg in self.websocket:
                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -332,23 +416,38 @@ class MCPNodeClient:
                     
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     logger.error(f"WebSocket error: {self.websocket.exception()}")
+                    should_reconnect = True
                     break
                     
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    logger.info("WebSocket closed")
+                    logger.info("WebSocket closed by server")
+                    should_reconnect = True
                     break
                     
+        except asyncio.CancelledError:
+            logger.debug("Message loop cancelled")
         except Exception as e:
             logger.error(f"Message loop error: {e}")
+            should_reconnect = True
         finally:
+            was_running = self._running
             self._running = False
             self.state.connected = False
+            
+            # Close session properly
+            await self._close_session()
+            
             if self.on_disconnected:
                 self.on_disconnected()
             
-            # Auto-Reconnect
-            if self._running:
+            # Auto-Reconnect only if we were intentionally running
+            # and connection was lost (not manual disconnect)
+            if was_running and should_reconnect:
+                logger.info(f"Reconnecting in {self._reconnect_delay}s...")
                 await asyncio.sleep(self._reconnect_delay)
+                # Exponential backoff for reconnects
+                self._reconnect_delay = min(self._reconnect_delay * 1.5, 60)
+                self._running = True  # Re-enable for reconnect
                 await self.connect()
     
     async def _handle_message(self, data: Dict[str, Any]):
@@ -435,19 +534,10 @@ class MCPNodeClient:
                 break
     
     async def disconnect(self):
-        """Verbindung trennen"""
+        """Verbindung trennen (ohne Reconnect)"""
         self._running = False
-
-        if self.websocket:
-            await self.websocket.close()
-            self.websocket = None
-
-        if self.aio_session:
-            await self.aio_session.close()
-            self.aio_session = None
-
-        self.state.connected = False
-        logger.info(f"Disconnected from MCP Node (session: {self.session_id})")
+        await self._close_session()
+        logger.info(f"MCP Node client disconnected (session: {self.session_id})")
     
     def is_connected(self) -> bool:
         """Prüft ob verbunden"""

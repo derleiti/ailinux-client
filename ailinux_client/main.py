@@ -11,6 +11,21 @@ Usage:
 """
 import sys
 import os
+
+# ============================================================================
+# CRITICAL: Qt Environment Setup BEFORE any Qt imports!
+# ============================================================================
+# Suppress noisy Qt scenegraph timing logs
+os.environ['QSG_INFO'] = '0'
+os.environ['QT_LOGGING_RULES'] = 'qt.scenegraph.time.*=false;qt.scenegraph.general=false;qt.qpa.*=false'
+
+# Force XCB platform with native OpenGL (not EGL which can cause issues)
+os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
+# Use native OpenGL, not ANGLE
+os.environ.setdefault('QT_XCB_GL_INTEGRATION', 'xcb_glx')
+# Faster update cycle for high-refresh displays
+os.environ.setdefault('QT_QPA_UPDATE_IDLE_TIME', '5')
+
 import argparse
 import signal
 import atexit
@@ -34,49 +49,43 @@ logger = logging.getLogger("ailinux.main")
 def setup_hardware_acceleration():
     """Setup Qt environment variables based on hardware capabilities.
     MUST be called BEFORE QApplication is created!
+    
+    NOTE: AILinux uses Qt Widgets, NOT Qt Quick/QML!
+    - QSG_* variables are for Qt Quick only - we don't use them
+    - We use QSurfaceFormat for OpenGL configuration
+    - Chromium flags affect only QWebEngineView
     """
     try:
-        from .core.hardware_detect import hardware_detector, get_qt_hints
+        from ailinux_client.core.hardware_detect import hardware_detector, get_qt_hints
 
         logger.info("Detecting hardware capabilities...")
         hints = get_qt_hints()
-
-        # Set Qt rendering backend based on hardware
-        if hints.get('use_opengl', False):
-            # Enable OpenGL acceleration
-            os.environ.setdefault('QT_QUICK_BACKEND', 'opengl')
-            os.environ.setdefault('QSG_RENDER_LOOP', 'basic')  # More stable
-
-            # Enable GPU rasterization for WebEngine
-            os.environ.setdefault('QTWEBENGINE_CHROMIUM_FLAGS',
-                '--enable-gpu-rasterization --enable-native-gpu-memory-buffers '
-                '--enable-accelerated-video-decode --enable-accelerated-mjpeg-decode')
-
-            logger.info("OpenGL acceleration enabled")
-        else:
-            # Software rendering fallback
-            os.environ.setdefault('QT_QUICK_BACKEND', 'software')
-            os.environ.setdefault('LIBGL_ALWAYS_SOFTWARE', '1')
-            logger.info("Using software rendering (no GPU acceleration detected)")
-
+        
         # Performance tier optimizations
         tier = hints.get('performance_tier', 'medium')
-        if tier == 'high':
-            # High performance system - enable all effects
+        thread_count = hints.get('thread_count', 4)
+        
+        # Enable GPU rasterization for WebEngine (Chromium)
+        # This is the ONLY place where GPU flags matter for our app
+        chromium_flags = (
+            '--enable-gpu-rasterization '
+            '--enable-native-gpu-memory-buffers '
+            '--enable-accelerated-video-decode '
+            '--enable-accelerated-mjpeg-decode '
+            '--enable-zero-copy '
+            '--enable-features=VaapiVideoDecoder '
+            '--disable-frame-rate-limit '
+            '--ignore-gpu-blocklist'
+        )
+        os.environ.setdefault('QTWEBENGINE_CHROMIUM_FLAGS', chromium_flags)
+        
+        # Thread pool for Qt
+        os.environ.setdefault('QT_THREAD_COUNT', str(thread_count))
+        
+        # High DPI scaling
+        if tier in ('high', 'medium'):
             os.environ.setdefault('QT_ENABLE_HIGHDPI_SCALING', '1')
             os.environ.setdefault('QT_SCALE_FACTOR_ROUNDING_POLICY', 'PassThrough')
-        elif tier == 'low':
-            # Low performance - reduce effects
-            os.environ.setdefault('QT_QUICK_CONTROLS_STYLE', 'Basic')
-            os.environ.setdefault('QT_ENABLE_GLYPH_CACHE_WORKAROUND', '1')
-
-        # Thread pool size
-        thread_count = hints.get('thread_count', 4)
-        os.environ.setdefault('QT_THREAD_COUNT', str(thread_count))
-
-        # V-Sync
-        if hints.get('enable_vsync', True):
-            os.environ.setdefault('QSG_RENDER_TIMING', '1')
 
         logger.info(f"Hardware optimization: tier={tier}, threads={thread_count}")
         return hints
@@ -88,11 +97,55 @@ def setup_hardware_acceleration():
 # Run hardware setup BEFORE importing Qt
 _hw_hints = setup_hardware_acceleration()
 
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt
+# ============================================================================
+# CRITICAL: QSurfaceFormat MUST be set BEFORE any Qt widget imports!
+# ============================================================================
 from PyQt6.QtGui import QSurfaceFormat
 
-# IMPORTANT: Import WebEngine BEFORE QApplication is created
+def _setup_surface_format():
+    """Configure OpenGL surface format for optimal performance.
+    
+    MUST be called before QApplication and QWebEngineView imports!
+    """
+    fmt = QSurfaceFormat()
+    
+    # Double buffering for smooth rendering
+    fmt.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
+    
+    # Request OpenGL 4.6 (your RX 7700 XT supports it!)
+    # Falls back automatically if not available
+    fmt.setMajorVersion(4)
+    fmt.setMinorVersion(6)
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+    
+    # V-Sync: Adaptive for high-end, standard for others
+    tier = _hw_hints.get('performance_tier', 'medium')
+    if tier == 'high':
+        fmt.setSwapInterval(-1)  # Adaptive V-Sync
+    else:
+        fmt.setSwapInterval(1)   # Standard V-Sync
+    
+    # Antialiasing for high-end systems
+    if _hw_hints.get('antialiasing', False):
+        fmt.setSamples(4)  # 4x MSAA
+    
+    # Depth and stencil buffers for proper rendering
+    fmt.setDepthBufferSize(24)
+    fmt.setStencilBufferSize(8)
+    
+    # Set as default BEFORE any widget creation
+    QSurfaceFormat.setDefaultFormat(fmt)
+    
+    logger.info(f"OpenGL surface format: {fmt.majorVersion()}.{fmt.minorVersion()} "
+                f"Core, SwapInterval={fmt.swapInterval()}, MSAA={fmt.samples()}")
+
+# Apply surface format NOW, before Qt widget imports
+_setup_surface_format()
+
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
+
+# IMPORTANT: Import WebEngine AFTER surface format is set
 from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
 
 
@@ -185,7 +238,7 @@ def main():
     # Handle --hwinfo command (no GUI needed)
     if args.hwinfo:
         try:
-            from .core.hardware_detect import hardware_detector
+            from ailinux_client.core.hardware_detect import hardware_detector
             print(hardware_detector.get_summary())
             return 0
         except Exception as e:
@@ -211,7 +264,6 @@ def main():
 
     # Force software rendering if requested
     if args.software_render:
-        os.environ['QT_QUICK_BACKEND'] = 'software'
         os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'
         os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = '--disable-gpu'
         logger.info("Forced software rendering mode")
@@ -222,19 +274,6 @@ def main():
 
     logger.info(f"Starting AILinux Client (desktop_mode={args.desktop})")
     logger.info(f"Server: https://api.ailinux.me")
-
-    # Setup OpenGL surface format for better rendering
-    surface_format = QSurfaceFormat()
-    surface_format.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
-    surface_format.setSwapInterval(1)  # V-Sync
-
-    # Enable antialiasing if GPU is available
-    if _hw_hints.get('antialiasing', False) and not args.software_render:
-        surface_format.setSamples(4)  # 4x MSAA
-    else:
-        surface_format.setSamples(0)
-
-    QSurfaceFormat.setDefaultFormat(surface_format)
 
     # High DPI support - MUST be called before QApplication
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -286,19 +325,19 @@ def main():
     """)
 
     # Initialize API client
-    from .core.api_client import APIClient
+    from ailinux_client.core.api_client import APIClient
     api_client = APIClient()
 
     # Show login dialog if not authenticated
     if not api_client.is_authenticated():
-        from .ui.login_dialog import LoginDialog
+        from ailinux_client.ui.login_dialog import LoginDialog
         login_dialog = LoginDialog(api_client)
         if login_dialog.exec() != login_dialog.DialogCode.Accepted:
             logger.info("Login cancelled")
             return 0
 
     # Create main window
-    from .ui.main_window import MainWindow
+    from ailinux_client.ui.main_window import MainWindow
 
     window = MainWindow(
         api_client=api_client,

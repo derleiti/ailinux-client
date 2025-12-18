@@ -17,6 +17,9 @@ except ImportError:
     import requests
     HAS_HTTPX = False
 
+# Backend error logging
+from .backend_error_logger import log_backend_error
+
 logger = logging.getLogger("ailinux.api_client")
 
 
@@ -110,29 +113,64 @@ class APIClient:
         data: Dict = None,
         timeout: float = 60.0
     ) -> Dict[str, Any]:
-        """Make HTTP request"""
+        """Make HTTP request with error logging"""
         url = f"{self.base_url}{endpoint}"
 
-        if HAS_HTTPX:
-            with httpx.Client(timeout=timeout) as client:
-                response = client.request(
+        try:
+            if HAS_HTTPX:
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.request(
+                        method,
+                        url,
+                        headers=self._headers(),
+                        json=data
+                    )
+                    response.raise_for_status()
+                    return response.json()
+            else:
+                response = requests.request(
                     method,
                     url,
                     headers=self._headers(),
-                    json=data
+                    json=data,
+                    timeout=timeout
                 )
                 response.raise_for_status()
                 return response.json()
-        else:
-            response = requests.request(
-                method,
-                url,
-                headers=self._headers(),
-                json=data,
-                timeout=timeout
+                
+        except (httpx.HTTPStatusError if HAS_HTTPX else requests.HTTPError) as e:
+            # Log backend error
+            status_code = e.response.status_code if hasattr(e, 'response') else 0
+            response_text = ""
+            try:
+                response_text = e.response.text[:500] if hasattr(e, 'response') else ""
+            except:
+                pass
+            
+            log_backend_error(
+                endpoint=endpoint,
+                method=method,
+                status_code=status_code,
+                error_message=str(e),
+                response_body=response_text,
+                request_data=data,
+                user_id=self.user_id,
+                tier=self.tier
             )
-            response.raise_for_status()
-            return response.json()
+            raise
+            
+        except Exception as e:
+            # Log connection errors
+            log_backend_error(
+                endpoint=endpoint,
+                method=method,
+                status_code=0,
+                error_message=f"Connection error: {e}",
+                request_data=data,
+                user_id=self.user_id,
+                tier=self.tier
+            )
+            raise
 
     # =========================================================================
     # Authentication

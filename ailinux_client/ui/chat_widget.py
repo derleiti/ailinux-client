@@ -23,7 +23,19 @@ from ..core.tier_manager import get_tier_manager
 from ..core.markdown_renderer import render_markdown, get_renderer
 from ..core.planning_prompt import get_planning_system_prompt, DEFAULT_SYSTEM_PROMPT
 
+# MCP Integration
+try:
+    from ..core.local_mcp import local_mcp
+    HAS_LOCAL_MCP = True
+except ImportError:
+    HAS_LOCAL_MCP = False
+
 logger = logging.getLogger("ailinux.chat_widget")
+
+# MCP Command patterns
+import re
+MCP_COMMAND_PATTERN = re.compile(r'^/mcp[:\s]+(\w+)(?:\s+(.*))?$', re.IGNORECASE | re.MULTILINE)
+MCP_TOOL_PATTERN = re.compile(r'^@(\w+)(?:\s+(.*))?$', re.MULTILINE)  # @tool_name args
 
 
 class SearchableModelSelector(QWidget):
@@ -304,21 +316,21 @@ class SearchableModelSelector(QWidget):
         self.info_label.setText(f"{total} models available • Scroll to browse")
 
     def _on_item_clicked(self, item: QListWidgetItem):
-        """Handle single click - highlight"""
-        model = item.data(Qt.ItemDataRole.UserRole)
-        if model and not model.get('is_header'):
-            self.model_list.setCurrentItem(item)
-
-    def _on_item_double_clicked(self, item: QListWidgetItem):
-        """Handle double click - select"""
+        """Handle single click - select model and close popup"""
         model = item.data(Qt.ItemDataRole.UserRole)
         if model and not model.get('is_header') and not model.get('locked'):
             self._select_model(model)
             self._hide_popup()
+            logger.debug(f"Model selected: {model.get('name')}")
+
+    def _on_item_double_clicked(self, item: QListWidgetItem):
+        """Handle double click - same as single click for consistency"""
+        self._on_item_clicked(item)
 
     def _select_model(self, model: Dict[str, Any]):
         """Select a model"""
         self.current_model = model
+        logger.info(f"Model selected: {model.get('id')} ({model.get('name')})")
 
         # Update button text
         name = model.get('name', 'Unknown')
@@ -443,8 +455,16 @@ class ChatWorker(QThread):
 
     def run(self):
         import time
+        logger.debug(f"ChatWorker.run: Starting request (model={self.model})")
+        
+        if not self.api_client:
+            logger.error("ChatWorker.run: No API client!")
+            self.error.emit("Kein API Client verfügbar")
+            return
+            
         try:
             start_time = time.time()
+            logger.debug(f"ChatWorker.run: Calling api_client.chat()")
             result = self.api_client.chat(
                 message=self.message,
                 model=self.model,
@@ -452,8 +472,10 @@ class ChatWorker(QThread):
             )
             # Add response time to result
             result["response_time_ms"] = int((time.time() - start_time) * 1000)
+            logger.info(f"ChatWorker.run: Success in {result['response_time_ms']}ms")
             self.finished.emit(result)
         except Exception as e:
+            logger.error(f"ChatWorker.run: Exception: {e}", exc_info=True)
             self.error.emit(str(e))
 
 
@@ -798,15 +820,206 @@ class ChatWidget(QWidget):
         """Refresh model list (called after tier change)"""
         self._load_models()
 
+    # =========================================================================
+    # MCP Command Handling
+    # =========================================================================
+
+    def _is_mcp_command(self, message: str) -> bool:
+        """Check if message contains MCP commands"""
+        return bool(MCP_COMMAND_PATTERN.search(message) or MCP_TOOL_PATTERN.search(message))
+
+    def _handle_mcp_command(self, message: str) -> bool:
+        """
+        Handle MCP commands in message.
+
+        Supported formats:
+        - /mcp:tool_name arguments
+        - /mcp tool_name arguments
+        - @tool_name arguments (quick format)
+
+        Returns True if handled, False otherwise.
+        """
+        if not HAS_LOCAL_MCP:
+            self._add_message("error", "MCP nicht verfügbar. Bitte installiere local_mcp.")
+            return True
+
+        # Check tier access for MCP
+        tier_mgr = get_tier_manager(self.api_client)
+        if not tier_mgr.can_use_mcp_tools():
+            self._add_message("error",
+                "MCP Tools sind erst ab Tier 'Registriert' verfügbar.\n"
+                "Registriere dich kostenlos oder upgrade auf Pro.")
+            return True
+
+        # Parse MCP commands
+        mcp_match = MCP_COMMAND_PATTERN.search(message)
+        tool_match = MCP_TOOL_PATTERN.search(message)
+
+        if mcp_match:
+            tool_name = mcp_match.group(1)
+            args_str = mcp_match.group(2) or ""
+        elif tool_match:
+            tool_name = tool_match.group(1)
+            args_str = tool_match.group(2) or ""
+        else:
+            return False
+
+        # Parse arguments (simple key=value or JSON)
+        arguments = self._parse_mcp_arguments(args_str)
+
+        # Show command in chat
+        self._add_message("user", f"🔧 MCP: {tool_name} {args_str}")
+
+        # Execute tool async
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        # Run in thread to avoid blocking UI
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self._execute_mcp_tool_async(tool_name, arguments))
+        return True
+
+    def _parse_mcp_arguments(self, args_str: str) -> Dict[str, Any]:
+        """Parse MCP tool arguments from string"""
+        import json
+        import shlex
+
+        args_str = args_str.strip()
+        if not args_str:
+            return {}
+
+        # Try JSON first
+        if args_str.startswith('{'):
+            try:
+                return json.loads(args_str)
+            except json.JSONDecodeError:
+                pass
+
+        # Parse key=value pairs
+        arguments = {}
+        try:
+            parts = shlex.split(args_str)
+            for part in parts:
+                if '=' in part:
+                    key, value = part.split('=', 1)
+                    # Try to parse value as JSON for nested objects
+                    try:
+                        arguments[key] = json.loads(value)
+                    except:
+                        arguments[key] = value
+                else:
+                    # Positional argument - use as 'input' or 'path'
+                    if 'path' not in arguments:
+                        arguments['path'] = part
+                    elif 'command' not in arguments:
+                        arguments['command'] = part
+                    else:
+                        arguments['input'] = part
+        except:
+            # Fallback: treat entire string as command
+            arguments['command'] = args_str
+
+        return arguments
+
+    def _execute_mcp_tool_async(self, tool_name: str, arguments: Dict[str, Any]):
+        """Execute MCP tool and show result"""
+        import asyncio
+
+        async def run_tool():
+            try:
+                result = await local_mcp.call_tool(tool_name, arguments)
+                return result
+            except Exception as e:
+                from ..core.local_mcp import MCPToolResult
+                return MCPToolResult(success=False, content="", error=str(e))
+
+        # Run in new loop
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(run_tool())
+            loop.close()
+
+            if result.success:
+                content = result.content or "(Keine Ausgabe)"
+                # Format output nicely
+                if len(content) > 2000:
+                    content = content[:2000] + "\n... (gekürzt)"
+                self._add_message("assistant", f"**MCP Result ({tool_name}):**\n```\n{content}\n```")
+            else:
+                self._add_message("error", f"MCP Error: {result.error}")
+
+        except Exception as e:
+            logger.error(f"MCP execution error: {e}")
+            self._add_message("error", f"MCP Fehler: {e}")
+
+    def send_to_mcp_cli_agent(self, message: str, agent_id: str = "claude-mcp"):
+        """
+        Send message directly to CLI agent via local MCP node.
+
+        This forwards the prompt to the CLI agent (Claude, Gemini, Codex)
+        connected through the local MCP stdio server.
+        """
+        if not self.api_client:
+            self._add_message("error", "Nicht authentifiziert")
+            return
+
+        try:
+            # Send to CLI agent via backend
+            result = self.api_client._request("POST", f"/v1/cli-agents/{agent_id}/call", {
+                "message": message,
+                "context": {
+                    "source": "chat_widget",
+                    "session_id": getattr(self.api_client, 'session_id', None)
+                }
+            })
+
+            if result and result.get("success"):
+                response = result.get("response", "")
+                self._add_message("assistant", f"**{agent_id}:**\n{response}")
+            else:
+                error = result.get("error", "Unknown error") if result else "No response"
+                self._add_message("error", f"CLI Agent Fehler: {error}")
+
+        except Exception as e:
+            logger.error(f"Failed to send to CLI agent: {e}")
+            self._add_message("error", f"CLI Agent nicht erreichbar: {e}")
+
     def _send_message(self):
         """Send message"""
         message = self.input_field.get_text()
         if not message:
+            logger.debug("_send_message: Empty message, ignoring")
             return
+
+        logger.info(f"_send_message: Sending message ({len(message)} chars)")
+
+        # Check if API client is available and authenticated
+        if not self.api_client:
+            logger.error("_send_message: No API client available")
+            self._add_message("error", "Nicht verbunden. Bitte neu starten.")
+            return
+
+        if not self.api_client.is_authenticated():
+            logger.warning("_send_message: Not authenticated")
+            self._add_message("error", "Nicht eingeloggt. Bitte zuerst anmelden.")
+            return
+
+        # Check for MCP commands first (before AI processing)
+        # Formats: /mcp:tool args, /mcp tool args, @tool args
+        if self._is_mcp_command(message):
+            if self._handle_mcp_command(message):
+                self.input_field.clear_text()
+                return
 
         # Get selected model from new selector
         model_data = self.model_selector.get_current_model_data()
         model = self.model_selector.get_current_model()
+        logger.debug(f"_send_message: Using model: {model}")
 
         # Check if model is locked (tier-restricted)
         if model_data and model_data.get('locked'):
@@ -850,23 +1063,27 @@ class ChatWidget(QWidget):
             system_prompt = DEFAULT_SYSTEM_PROMPT
         
         # Start worker
+        logger.info(f"_send_message: Starting ChatWorker (model={model})")
         self.worker = ChatWorker(self.api_client, message, model, system_prompt)
         self.worker.finished.connect(self._on_response)
         self.worker.error.connect(self._on_error)
         self.worker.start()
+        logger.debug("_send_message: Worker started")
 
     def _on_response(self, result: dict):
         """Handle response and update statusbar"""
+        logger.info(f"_on_response: Received response")
         self.input_field.setEnabled(True)
         self.send_btn.setEnabled(True)
 
         response = result.get("response", "")
         model = result.get("model", "unknown")
-        tokens_used = result.get("tokens_used", 0)
-        response_time_ms = result.get("response_time_ms", 0)
+        tokens_used = result.get("tokens_used") or 0  # Handle None
+        response_time_ms = result.get("response_time_ms") or 0  # Handle None
+        logger.debug(f"_on_response: model={model}, tokens={tokens_used}, time={response_time_ms}ms")
 
         # Track token usage for cloud models
-        if tokens_used > 0:
+        if tokens_used and tokens_used > 0:
             tier_mgr = get_tier_manager(self.api_client)
             tier_mgr.track_tokens(tokens_used)
 
@@ -879,6 +1096,7 @@ class ChatWidget(QWidget):
 
     def _on_error(self, error: str):
         """Handle error"""
+        logger.error(f"_on_error: {error}")
         self.input_field.setEnabled(True)
         self.send_btn.setEnabled(True)
 

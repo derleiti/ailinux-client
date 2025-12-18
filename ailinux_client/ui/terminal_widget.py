@@ -274,6 +274,9 @@ class TerminalDisplay(QWidget):
     """
     Custom widget that renders the pyte screen with proper colors.
     Supports customizable colors and fonts via QSettings.
+    
+    PERFORMANCE: Uses Qt's native double buffering (setAttribute WA_OpaquePaintEvent)
+    and optimized painting with text run coalescing.
     """
 
     # 256-color palette (standard + extended)
@@ -297,6 +300,8 @@ class TerminalDisplay(QWidget):
         self._update_font_metrics()
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        
+        # Background handling - let Qt handle it properly
         self.setAutoFillBackground(True)
 
         # Allow widget to shrink and expand
@@ -344,9 +349,11 @@ class TerminalDisplay(QWidget):
         self.COLORS_16["black"] = self.bg_color
 
     def _update_palette(self):
-        """Update background palette"""
+        """Update background palette (minimal, since we paint background ourselves)"""
+        # We don't use system background, but set palette for consistency
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.Window, QColor(self.bg_color))
+        palette.setColor(QPalette.ColorRole.Base, QColor(self.bg_color))
         self.setPalette(palette)
 
     def apply_settings(self):
@@ -603,12 +610,15 @@ class TerminalDisplay(QWidget):
         return QColor(default)
 
     def paintEvent(self, event):
-        """Optimized paint event with batched drawing and caching"""
+        """Optimized paint event with batched drawing, string coalescing, and partial repaints"""
         if not self.screen:
             return
 
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        
+        # Performance: Only enable antialiasing if not in high-frequency update mode
+        if not self._update_pending if hasattr(self, '_update_pending') else True:
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
         # Cache colors (avoid repeated QColor construction)
         if not hasattr(self, '_color_cache'):
@@ -622,12 +632,21 @@ class TerminalDisplay(QWidget):
             self._font_bold = QFont(self.font)
             self._font_bold.setBold(True)
 
+        # PERFORMANCE: Clip to dirty region only
+        clip_rect = event.rect()
+        painter.setClipRect(clip_rect)
+        
+        # Calculate visible row range from clip rect
+        first_visible_row = max(0, clip_rect.y() // self.char_height)
+        last_visible_row = min(self.screen.lines, (clip_rect.bottom() // self.char_height) + 1)
+
         # Background - only repaint dirty region
-        painter.fillRect(event.rect(), self._bg_qcolor)
+        painter.fillRect(clip_rect, self._bg_qcolor)
 
         # Batch rectangles and text by style for efficient drawing
         bg_rects = []  # (rect, color)
-        text_items = []  # (x, y, char, fg_color, is_bold)
+        # PERFORMANCE: Coalesce consecutive characters with same style into strings
+        text_runs = []  # (x, y, text_string, fg_color, is_bold)
 
         # Get history lines if scrolled
         history_lines = []
@@ -636,10 +655,17 @@ class TerminalDisplay(QWidget):
 
         history_len = len(history_lines)
 
-        # Draw each row
-        for y in range(self.screen.lines):
+        # PERFORMANCE: Only iterate visible rows
+        for y in range(first_visible_row, last_visible_row):
             py = y * self.char_height
             history_idx = history_len - self.scroll_offset + y
+            
+            # PERFORMANCE: Coalesce characters into text runs per line
+            current_run_start_x = None
+            current_run_text = ""
+            current_run_fg = None
+            current_run_bold = None
+            current_run_y = py + self.char_height - 3
 
             if self.scroll_offset > 0 and 0 <= history_idx < history_len:
                 # History line
@@ -648,11 +674,16 @@ class TerminalDisplay(QWidget):
                     char_data = line.get(x) if isinstance(line, dict) else (line[x] if x < len(line) else None)
 
                     if char_data is None:
-                        continue  # Skip empty cells
+                        # Flush current run if any
+                        if current_run_text:
+                            text_runs.append((current_run_start_x, current_run_y, current_run_text, current_run_fg, current_run_bold))
+                            current_run_text = ""
+                            current_run_start_x = None
+                        continue
 
                     char = getattr(char_data, 'data', None) or (str(char_data) if not isinstance(char_data, str) else char_data)
-                    if not char or char == ' ':
-                        continue
+                    if not char:
+                        char = ' '
 
                     fg = self._get_cached_color(getattr(char_data, 'fg', 'default'), self._fg_qcolor)
                     bg = self._get_cached_color(getattr(char_data, 'bg', 'default'), self._bg_qcolor)
@@ -670,7 +701,26 @@ class TerminalDisplay(QWidget):
                     if is_selected or bg != self._bg_qcolor:
                         bg_rects.append((px, py, self.char_width, self.char_height, bg))
 
-                    text_items.append((px, py + self.char_height - 3, char, fg, bold))
+                    # PERFORMANCE: Coalesce consecutive chars with same style
+                    if current_run_fg == fg and current_run_bold == bold and char != ' ':
+                        current_run_text += char
+                    else:
+                        # Flush previous run
+                        if current_run_text:
+                            text_runs.append((current_run_start_x, current_run_y, current_run_text, current_run_fg, current_run_bold))
+                        # Start new run (skip spaces)
+                        if char != ' ':
+                            current_run_start_x = px
+                            current_run_text = char
+                            current_run_fg = fg
+                            current_run_bold = bold
+                        else:
+                            current_run_text = ""
+                            current_run_start_x = None
+                
+                # Flush final run for this line
+                if current_run_text:
+                    text_runs.append((current_run_start_x, current_run_y, current_run_text, current_run_fg, current_run_bold))
             else:
                 # Current screen line
                 screen_y = y if self.scroll_offset == 0 else y - max(0, self.scroll_offset - history_len)
@@ -679,8 +729,8 @@ class TerminalDisplay(QWidget):
 
                 line = self.screen.display[screen_y]
                 for x, char in enumerate(line):
-                    if not char or char == ' ':
-                        continue
+                    if not char:
+                        char = ' '
 
                     try:
                         char_data = self.screen.buffer[screen_y][x]
@@ -703,29 +753,55 @@ class TerminalDisplay(QWidget):
                     if is_selected or bg != self._bg_qcolor:
                         bg_rects.append((px, py, self.char_width, self.char_height, bg))
 
-                    text_items.append((px, py + self.char_height - 3, char, fg, bold))
+                    # PERFORMANCE: Coalesce consecutive chars with same style
+                    if current_run_fg == fg and current_run_bold == bold and char != ' ':
+                        current_run_text += char
+                    else:
+                        # Flush previous run
+                        if current_run_text:
+                            text_runs.append((current_run_start_x, current_run_y, current_run_text, current_run_fg, current_run_bold))
+                        # Start new run (skip spaces)
+                        if char != ' ':
+                            current_run_start_x = px
+                            current_run_text = char
+                            current_run_fg = fg
+                            current_run_bold = bold
+                        else:
+                            current_run_text = ""
+                            current_run_start_x = None
+                
+                # Flush final run for this line
+                if current_run_text:
+                    text_runs.append((current_run_start_x, current_run_y, current_run_text, current_run_fg, current_run_bold))
 
         # Batch draw backgrounds
         for px, py, w, h, bg in bg_rects:
             painter.fillRect(px, py, w, h, bg)
 
-        # Batch draw text (group by color and bold for fewer state changes)
+        # PERFORMANCE: Draw text runs (coalesced strings) instead of individual chars
+        # This dramatically reduces QPainter state changes and drawText calls
         current_fg = None
         current_bold = None
-        for px, py, char, fg, bold in text_items:
+        for px, py, text_str, fg, bold in text_runs:
+            # Skip invalid entries (px can be None if run was empty)
+            if px is None or text_str is None or not text_str:
+                continue
             if fg != current_fg:
                 painter.setPen(fg)
                 current_fg = fg
             if bold != current_bold:
                 painter.setFont(self._font_bold if bold else self._font_normal)
                 current_bold = bold
-            painter.drawText(px, py, char)
+            # Draw entire string at once instead of char-by-char
+            painter.drawText(int(px), int(py), text_str)
 
-        # Draw cursor
+        # Draw cursor (only if visible in clip region)
         if self.scroll_offset == 0 and self.cursor_visible and self.hasFocus():
             cx = self.screen.cursor.x * self.char_width
             cy = self.screen.cursor.y * self.char_height
-            painter.fillRect(cx, cy, self.char_width, self.char_height, self._cursor_qcolor)
+            cursor_rect = (cx, cy, self.char_width, self.char_height)
+            if clip_rect.intersects(painter.clipBoundingRect().toRect() if painter.hasClipping() else clip_rect):
+                painter.fillRect(cx, cy, self.char_width, self.char_height, self._cursor_qcolor)
 
     def _get_cached_color(self, color, default):
         """Get QColor from cache or create new one"""
@@ -782,7 +858,14 @@ class PyteTerminal(QWidget, KeyCaptureMixin):
         self._update_timer = QTimer()
         self._update_timer.setSingleShot(True)
         self._update_timer.timeout.connect(self._flush_update)
-        self._update_interval = 16  # ~60fps max
+        # PERFORMANCE: Adaptive update interval based on screen refresh rate
+        # 16ms = 60fps, 8ms = 120fps, 6ms = 165fps
+        self._update_interval = 8  # Target ~120fps for smoother ultrawide experience
+        
+        # Resize debounce timer
+        self._resize_timer = QTimer()
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._apply_resize)
 
         self._setup_ui()
         self._setup_key_bindings()
@@ -1199,12 +1282,23 @@ class PyteTerminal(QWidget, KeyCaptureMixin):
             self.master_fd = None
 
     def resizeEvent(self, event):
-        """Handle resize - update PTY size"""
+        """Handle resize - debounced PTY size update for smooth ultrawide performance"""
         super().resizeEvent(event)
+        # PERFORMANCE: Debounce resize events to avoid PTY thrashing during window resize
+        # This is critical for smooth 21:9 ultrawide performance
+        if hasattr(self, '_resize_timer'):
+            self._pending_resize = event.size()
+            self._resize_timer.start(50)  # 50ms debounce
+    
+    def _apply_resize(self):
+        """Apply debounced resize to PTY"""
+        if not hasattr(self, '_pending_resize') or not self._pending_resize:
+            return
+            
         if self.master_fd and self.display.char_width > 0:
             # Account for scrollbar width (12px) and margins
-            available_width = self.width() - 16
-            available_height = self.height() - 8
+            available_width = self._pending_resize.width() - 16
+            available_height = self._pending_resize.height() - 8
 
             new_cols = max(40, available_width // self.display.char_width)
             new_rows = max(10, available_height // self.display.char_height)
@@ -1225,6 +1319,8 @@ class PyteTerminal(QWidget, KeyCaptureMixin):
 
                 # Trigger display update
                 self._schedule_update()
+        
+        self._pending_resize = None
 
 
 # ============================================================================
@@ -1382,7 +1478,7 @@ class TerminalWidget(QWidget):
         return terminal
 
     def _close_tab(self, index: int):
-        """Close tab"""
+        """Close tab by index"""
         if self.tabs.count() <= 1:
             return
 
@@ -1391,6 +1487,24 @@ class TerminalWidget(QWidget):
             terminal.close_terminal()
 
         self.tabs.removeTab(index)
+
+    def close_current_tab(self):
+        """Close current terminal tab (Ctrl+W)"""
+        self._close_tab(self.tabs.currentIndex())
+
+    def next_tab(self):
+        """Switch to next terminal tab (Ctrl+Tab)"""
+        if self.tabs.count() > 1:
+            next_idx = (self.tabs.currentIndex() + 1) % self.tabs.count()
+            self.tabs.setCurrentIndex(next_idx)
+            self.focus_current()
+
+    def prev_tab(self):
+        """Switch to previous terminal tab (Ctrl+Shift+Tab)"""
+        if self.tabs.count() > 1:
+            prev_idx = (self.tabs.currentIndex() - 1) % self.tabs.count()
+            self.tabs.setCurrentIndex(prev_idx)
+            self.focus_current()
 
     def _on_terminal_finished(self, terminal: TerminalTab):
         """Terminal process finished"""

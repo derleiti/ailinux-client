@@ -1,0 +1,178 @@
+[
+  {
+    "timestamp": "2025-12-18T12:16:27.019163",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:16:37.085315",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:16:57.162465",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:28:44.905924",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:29:09.144278",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:29:19.205814",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:29:39.265419",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:35:51.154579",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:36:01.218895",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:36:21.291954",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:38:29.747951",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:38:58.271847",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:40:33.645306",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:41:00.170809",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:41:10.236734",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  },
+  {
+    "timestamp": "2025-12-18T12:41:30.313099",
+    "endpoint": "/v1/mcp/node/connect",
+    "method": "WEBSOCKET",
+    "status_code": 403,
+    "error_message": "403, message='Invalid response status', url='wss://api.ailinux.me/v1/mcp/node/connect?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJjbGllbnQtbXJrc2xlaXRlci02MTk5ZDMwNzY2ODAwMzA5Iiwicm9sZSI6ImZyZWUiLCJleHAiOjE3NjYxNDE1MDcsImlhdCI6MTc2NjA1NTEwNywiZW1haWwiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20iLCJzdWIiOiJtcmtzbGVpdGVybWFubkBnbWFpbC5jb20ifQ.7zYwoyqzhVvTVWlBVtm5ljLrEcTwX7srx0-2uYtYEiY&session_id=sess_728aa35648194fc4&machine_id=a2da912eec8f4222&user_id=mrksleitermann@gmail.com&tier=free&client_version=1.0.0&mode=telemetry'",
+    "response_body": null,
+    "request_data": null,
+    "user_id": "mrksleitermann@gmail.com",
+    "tier": "free"
+  }
+]

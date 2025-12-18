@@ -29,5 +29,17 @@ cryptography>=41.0.0
 # Async support
 anyio>=4.0.0
 
+# Environment variables
+python-dotenv>=1.0.0
+
+# Image processing (for icons)
+pillow>=10.0.0
+
+# Secure credential storage
+keyring>=24.0.0
+
+# PAM authentication for lock screen (F5)
+python-pam>=2.0.0
+
 # Optional: Rich terminal output for debugging
 # rich>=13.0.0

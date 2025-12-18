@@ -1,12 +1,21 @@
+#!/usr/bin/env xdg-open
 [Desktop Entry]
-Name=AILinux Client
-Comment=KI-gestützter Desktop-Client für AILinux
-GenericName=AI Assistant
-Exec=ailinux-client
-Icon=ailinux-client
-Terminal=false
-Type=Application
 Categories=Development;Utility;Network;
+Comment[de_DE]=KI-gestützter Desktop-Client für AILinux
+Comment=KI-gestützter Desktop-Client für AILinux
+Exec=/home/zombie/Downloads/ailinux-client/run-ailinux.sh
+GenericName[de_DE]=AI Assistant
+GenericName=AI Assistant
+Icon=ailinux-client
 Keywords=ai;llm;chat;assistant;ollama;claude;gemini;nova;
+MimeType=
+Name[de_DE]=AILinux Client
+Name=AILinux Client
+Path=
 StartupNotify=true
 StartupWMClass=ailinux-client
+Terminal=false
+TerminalOptions=
+Type=Application
+X-KDE-SubstituteUID=false
+X-KDE-Username=

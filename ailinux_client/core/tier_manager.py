@@ -1,14 +1,14 @@
 """
-AILinux Tier Manager v3.0
+AILinux Tier Manager v3.1
 =========================
 
 Synchronisiert Tier-Informationen mit dem Server.
 
-Tiers:
-- GUEST: Ollama only, 50k/Tag, kein MCP
-- REGISTERED: Ollama only, 100k/Tag, MCP ✓
-- PRO: Alle Modelle, 250k Cloud / Ollama ∞
-- ENTERPRISE: Unlimited
+Tiers (Token Limits per MONTH):
+- GUEST (Free unregistered): Ollama only, 50k tokens/month, kein MCP
+- REGISTERED: Ollama + MCP, 100k tokens/month, MCP Tools ✓
+- PRO: 250k tokens/month (Cloud), Ollama ∞ unlimited, MCP ✓
+- ENTERPRISE: Unlimited tokens, MCP ✓, CLI Agents lokal
 """
 import logging
 from typing import Dict, List, Any, Optional
@@ -43,24 +43,31 @@ class TierConfig:
     display_name: str
     price_monthly: float = 0.0
     price_yearly: float = 0.0
-    
+
     # Model access
     ollama_models: bool = True
     cloud_models: bool = False
     model_count: int = 20
-    
+
     # Features
     mcp_access: bool = False
     cli_agents: bool = False
     priority_queue: bool = False
-    
-    # Limits
-    daily_token_limit: int = 50000
+    local_cli_agents: bool = False  # Enterprise: CLI Agents connect to local MCP
+
+    # Limits (MONTHLY - not daily!)
+    monthly_token_limit: int = 50000  # Per month
+    daily_token_limit: int = 0  # Calculated: monthly / 30 (for backwards compatibility)
     ollama_unlimited: bool = False
-    
+
     # UI
     color: str = "#888888"
     features: List[str] = None
+
+    def __post_init__(self):
+        # Calculate daily limit from monthly for backwards compatibility
+        if self.monthly_token_limit > 0 and self.daily_token_limit == 0:
+            self.daily_token_limit = self.monthly_token_limit // 30
 
 
 # Server-kompatibles Tier Mapping
@@ -80,36 +87,41 @@ TIER_MAP = {
 
 
 # Default Configs (werden vom Server überschrieben)
+# Token limits are MONTHLY as per documentation
 DEFAULT_CONFIGS: Dict[Tier, TierConfig] = {
     Tier.GUEST: TierConfig(
-        name="guest", display_name="Gast",
+        name="guest", display_name="Gast (Free)",
         price_monthly=0.0, ollama_models=True, cloud_models=False,
-        mcp_access=False, cli_agents=False, daily_token_limit=50000,
+        mcp_access=False, cli_agents=False,
+        monthly_token_limit=50000,  # 50k tokens/month
         ollama_unlimited=False, color="#888888",
-        features=["20 Ollama Cloud-Modelle", "50k Tokens/Tag", "Kein MCP"]
+        features=["20 Ollama Cloud-Modelle", "50k Tokens/Monat", "Kein MCP"]
     ),
     Tier.REGISTERED: TierConfig(
         name="registered", display_name="Registriert",
         price_monthly=0.0, ollama_models=True, cloud_models=False,
-        mcp_access=True, cli_agents=True, daily_token_limit=100000,
+        mcp_access=True, cli_agents=True,
+        monthly_token_limit=100000,  # 100k tokens/month
         ollama_unlimited=False, color="#22c55e",
-        features=["20 Ollama Cloud-Modelle", "MCP Tools ✓", "100k Tokens/Tag"]
+        features=["20 Ollama Cloud-Modelle", "MCP Tools ✓", "100k Tokens/Monat"]
     ),
     Tier.PRO: TierConfig(
         name="pro", display_name="Pro",
         price_monthly=18.99, price_yearly=189.99,
         ollama_models=True, cloud_models=True, model_count=600,
-        mcp_access=True, cli_agents=True, daily_token_limit=250000,
+        mcp_access=True, cli_agents=True,
+        monthly_token_limit=250000,  # 250k tokens/month (Cloud)
         ollama_unlimited=True, color="#3b82f6",
-        features=["600+ KI-Modelle", "250k Tokens/Tag (Cloud)", "Ollama ∞ unlimited"]
+        features=["600+ KI-Modelle", "250k Tokens/Monat (Cloud)", "Ollama ∞ unlimited", "MCP ✓"]
     ),
     Tier.ENTERPRISE: TierConfig(
         name="enterprise", display_name="Unlimited",
         price_monthly=59.99, price_yearly=599.99,
         ollama_models=True, cloud_models=True, model_count=600,
-        mcp_access=True, cli_agents=True, daily_token_limit=0,
+        mcp_access=True, cli_agents=True, local_cli_agents=True,
+        monthly_token_limit=0,  # Unlimited (0 = no limit)
         ollama_unlimited=True, priority_queue=True, color="#a855f7",
-        features=["600+ KI-Modelle", "Unlimited Tokens", "Priority Queue ✓"]
+        features=["600+ KI-Modelle", "Unlimited Tokens", "Priority Queue ✓", "Lokale CLI Agents"]
     ),
 }
 
@@ -198,7 +210,20 @@ class TierManager:
         """Parst Server Tier-Info in lokale Config"""
         tier_name = info.get("tier", "guest").lower()
         self._tier = TIER_MAP.get(tier_name, Tier.GUEST)
-        
+
+        # Server can send monthly_token_limit or daily_token_limit
+        monthly_limit = info.get("monthly_token_limit", 0)
+        daily_limit = info.get("daily_token_limit", 0)
+
+        # If only daily is provided, convert to monthly (backwards compat)
+        if monthly_limit == 0 and daily_limit > 0:
+            monthly_limit = daily_limit * 30
+
+        # Use default from tier if not specified
+        if monthly_limit == 0:
+            default_config = DEFAULT_CONFIGS.get(self._tier)
+            monthly_limit = default_config.monthly_token_limit if default_config else 50000
+
         self._config = TierConfig(
             name=info.get("tier", "guest"),
             display_name=info.get("name", "Gast"),
@@ -209,14 +234,15 @@ class TierManager:
             model_count=info.get("model_count", 20) if isinstance(info.get("model_count"), int) else 600,
             mcp_access=info.get("mcp_access", False),
             cli_agents=info.get("cli_agents", False),
+            local_cli_agents=info.get("local_cli_agents", False),
             priority_queue=info.get("priority_queue", False),
-            daily_token_limit=info.get("daily_token_limit", 50000),
+            monthly_token_limit=monthly_limit,
             ollama_unlimited=info.get("ollama_unlimited", False),
             features=info.get("features", []),
         )
-        
+
         self._ollama_unlimited = info.get("ollama_unlimited", False)
-        self._token_limit = info.get("daily_token_limit", 50000)
+        self._token_limit = monthly_limit  # Use monthly limit
         
     def sync_models_from_server(self) -> List[str]:
         """Holt Modelle vom Server"""
@@ -259,7 +285,11 @@ class TierManager:
     
     def can_use_mcp_tools(self) -> bool:
         return self.config.mcp_access
-    
+
+    def can_use_local_cli_agents(self) -> bool:
+        """Enterprise: CLI Agents verbinden sich lokal mit MCP Node"""
+        return self.config.local_cli_agents or self.tier == Tier.ENTERPRISE
+
     def is_ollama_unlimited(self) -> bool:
         """Pro/Enterprise: Ollama ohne Token-Limit"""
         return self._ollama_unlimited or self.tier in (Tier.PRO, Tier.ENTERPRISE)
@@ -346,6 +376,33 @@ class TierManager:
         if self._token_limit == 0 or self._ollama_unlimited:
             return -1
         return max(0, self._token_limit - self._token_usage)
+
+    # =========================================================================
+    # Request Tracking (backwards compatibility)
+    # =========================================================================
+
+    def has_request_limit(self) -> bool:
+        """Check if there's a request limit (for backwards compatibility)"""
+        # Pro and Enterprise have no limits
+        if self.tier in (Tier.PRO, Tier.ENTERPRISE):
+            return False
+        # Ollama unlimited means no request limit
+        if self._ollama_unlimited:
+            return False
+        return self._token_limit > 0
+
+    def get_remaining_requests(self) -> int:
+        """Get remaining requests (approximation based on tokens)"""
+        remaining_tokens = self.get_remaining_tokens()
+        if remaining_tokens < 0:  # Unlimited
+            return 999999
+        # Assume average 500 tokens per request
+        return max(0, remaining_tokens // 500)
+
+    def track_request(self):
+        """Track a request (for backwards compatibility)"""
+        # We don't track requests separately, only tokens
+        pass
     
     def get_usage_info(self) -> Dict[str, Any]:
         """Usage-Informationen"""
@@ -354,8 +411,11 @@ class TierManager:
             "tier_name": self.config.display_name,
             "token_usage": self._token_usage,
             "token_limit": self._token_limit,
+            "monthly_token_limit": self._token_limit,  # Explicitly monthly
             "remaining_tokens": self.get_remaining_tokens(),
             "ollama_unlimited": self._ollama_unlimited,
+            "mcp_access": self.config.mcp_access,
+            "local_cli_agents": self.config.local_cli_agents,
         }
     
     # =========================================================================
@@ -365,15 +425,19 @@ class TierManager:
     def get_status_text(self) -> str:
         """Status-Text für Statusbar"""
         text = f"{self.config.display_name}"
-        
+
         # Token-Info nur wenn nicht unlimited
         if not self._ollama_unlimited and self._token_limit > 0:
             remaining = self.get_remaining_tokens()
             if remaining >= 0:
-                text += f" | {remaining:,} tokens"
+                text += f" | {remaining:,} tokens/Monat"
         elif self._ollama_unlimited:
             text += " | Ollama ∞"
-        
+
+        # MCP Status
+        if self.config.mcp_access:
+            text += " | MCP ✓"
+
         return text
     
     def get_status_color(self) -> str:

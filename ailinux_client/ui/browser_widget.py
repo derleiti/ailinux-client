@@ -362,9 +362,10 @@ class BrowserTab(QWidget):
 
     @classmethod
     def get_profile(cls):
-        """Get or create the persistent browser profile"""
+        """Get or create the persistent browser profile with GPU optimization"""
         if cls._profile is None:
             from pathlib import Path
+            import os
 
             # Create storage directory
             browser_path = Path.home() / ".config" / "ailinux" / "browser"
@@ -399,6 +400,27 @@ class BrowserTab(QWidget):
             settings.setAttribute(QWebEngineSettings.WebAttribute.AutoLoadIconsForPage, True)
             settings.setAttribute(QWebEngineSettings.WebAttribute.TouchIconsEnabled, True)
             settings.setAttribute(QWebEngineSettings.WebAttribute.AllowWindowActivationFromJavaScript, True)
+
+            # PERFORMANCE: Set Chromium flags for GPU compositing and high-refresh displays
+            # These flags improve performance on ultrawide/high-refresh monitors
+            chromium_flags = os.environ.get('QTWEBENGINE_CHROMIUM_FLAGS', '')
+            performance_flags = [
+                '--enable-gpu-rasterization',
+                '--enable-native-gpu-memory-buffers',
+                '--enable-accelerated-video-decode',
+                '--enable-accelerated-mjpeg-decode',
+                '--enable-zero-copy',  # Reduces memory copies for compositing
+                '--enable-features=VaapiVideoDecoder',  # Hardware video decode on Linux
+                '--disable-gpu-vsync',  # Let Qt handle vsync instead of Chromium
+                '--disable-frame-rate-limit',  # Allow higher frame rates on high-refresh displays
+            ]
+            # Only add flags not already present
+            for flag in performance_flags:
+                if flag not in chromium_flags:
+                    chromium_flags += f' {flag}'
+            os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = chromium_flags.strip()
+            
+            logger.info(f"Browser Chromium flags: {chromium_flags}")
 
             # Set user agent
             cls._profile.setHttpUserAgent(
@@ -1516,10 +1538,15 @@ class BrowserWidget(QWidget):
                 self.overflow_btn.setToolTip("Overflow-Menü (Tabs & Lesezeichen)")
 
     def resizeEvent(self, event):
-        """Bei Größenänderung Overflow neu prüfen"""
+        """Bei Größenänderung Overflow neu prüfen - debounced für Ultrawide-Performance"""
         super().resizeEvent(event)
-        # Verzögerung um Layout-Thrashing zu vermeiden
-        QTimer.singleShot(50, self._check_bookmark_overflow)
+        # PERFORMANCE: Increased debounce for smoother resize on ultrawide monitors
+        # This prevents layout thrashing during continuous window resize
+        if not hasattr(self, '_resize_debounce_timer'):
+            self._resize_debounce_timer = QTimer()
+            self._resize_debounce_timer.setSingleShot(True)
+            self._resize_debounce_timer.timeout.connect(self._check_bookmark_overflow)
+        self._resize_debounce_timer.start(100)  # 100ms debounce for resize
 
     def setup_shortcuts(self):
         """Setup keyboard shortcuts for browser - using WidgetWithChildrenShortcut context"""

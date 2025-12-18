@@ -184,13 +184,76 @@ class LocalMCPServer:
     Generates MCP server configuration for CLI agents
 
     Creates a config file that CLI agents can use to connect
-    to our local MCP tool server.
+    to our local MCP tool server via stdio or WebSocket.
+
+    Bootstrap Flow:
+    1. Client starts and connects to server MCP node
+    2. Client generates MCP config for CLI agents
+    3. CLI agents (Claude, Gemini, etc.) use this config to connect
+    4. Agents can now use local MCP tools
+
+    Environment variables set for agents:
+    - AILINUX_SERVER: Backend URL
+    - AILINUX_TOKEN: User auth token
+    - AILINUX_TIER: User tier (for tool filtering)
+    - AILINUX_SESSION_ID: Session ID for telemetry
     """
 
     def __init__(self, server_port: int = 9876):
         self.server_port = server_port
         self.config_dir = Path.home() / ".config" / "ailinux" / "mcp"
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        self._bootstrapped = False
+
+    def bootstrap_for_tier(self, tier: str, token: str = None, server_url: str = None) -> bool:
+        """
+        Bootstrap MCP server configs for all agents based on user tier.
+
+        This should be called after user authentication to set up proper
+        MCP configs with correct credentials and tier-based tool access.
+        """
+        self._tier = tier
+        self._token = token
+        self._server_url = server_url or os.environ.get("AILINUX_SERVER", "https://api.ailinux.me")
+
+        # Load session ID
+        session_file = Path.home() / ".config" / "ailinux" / "session_id"
+        if session_file.exists():
+            self._session_id = session_file.read_text().strip()
+        else:
+            import uuid
+            self._session_id = f"sess_{uuid.uuid4().hex[:16]}"
+            session_file.parent.mkdir(parents=True, exist_ok=True)
+            session_file.write_text(self._session_id)
+
+        # Generate configs for all MCP-supported agents
+        agents_configured = 0
+        for agent_name in ["claude", "gemini", "codex", "opencode"]:
+            try:
+                self.generate_config_for_agent(agent_name)
+                agents_configured += 1
+            except Exception as e:
+                logger.warning(f"Failed to generate config for {agent_name}: {e}")
+
+        self._bootstrapped = agents_configured > 0
+        logger.info(f"MCP Bootstrap complete: {agents_configured} agents configured (tier: {tier})")
+        return self._bootstrapped
+
+    def get_agent_env(self) -> Dict[str, str]:
+        """Get environment variables for CLI agents to connect to MCP"""
+        env = {
+            "AILINUX_SERVER": getattr(self, '_server_url', "https://api.ailinux.me"),
+            "AILINUX_TIER": getattr(self, '_tier', "free"),
+            "AILINUX_MCP_MODE": "stdio",
+        }
+
+        if hasattr(self, '_token') and self._token:
+            env["AILINUX_TOKEN"] = self._token
+
+        if hasattr(self, '_session_id') and self._session_id:
+            env["AILINUX_SESSION_ID"] = self._session_id
+
+        return env
 
     def generate_config_for_agent(self, agent_name: str) -> str:
         """
@@ -210,33 +273,133 @@ class LocalMCPServer:
     def _get_config_template(self, agent_name: str) -> Dict[str, Any]:
         """Get MCP config template for agent type"""
 
-        # Base config with stdio server
-        config = {
-            "mcpServers": {
-                "ailinux-local": {
-                    "command": "python3",
-                    "args": [
-                        "-m", "ailinux_client.core.mcp_stdio_server"
-                    ],
-                    "env": {
-                        "AILINUX_MCP_MODE": "stdio"
-                    }
-                }
-            }
+        # Get environment variables for MCP connection
+        env_vars = self.get_agent_env()
+
+        # Base MCP server config
+        mcp_server_config = {
+            "command": "python3",
+            "args": ["-m", "ailinux_client.core.mcp_stdio_server"],
+            "env": env_vars
         }
 
-        # Agent-specific adjustments
+        # Agent-specific config formats
         if agent_name == "claude":
-            # Claude Code uses standard MCP config
-            pass
+            # Claude Code uses standard MCP config format
+            config = {
+                "mcpServers": {
+                    "ailinux": mcp_server_config
+                }
+            }
         elif agent_name == "gemini":
-            # Gemini might use different format
-            pass
+            # Gemini CLI uses similar format but may need adjustments
+            config = {
+                "mcpServers": {
+                    "ailinux": mcp_server_config
+                }
+            }
         elif agent_name == "codex":
-            # Codex format
-            pass
+            # OpenAI Codex CLI format
+            config = {
+                "mcpServers": {
+                    "ailinux": mcp_server_config
+                }
+            }
+        elif agent_name == "opencode":
+            # OpenCode format
+            config = {
+                "mcpServers": {
+                    "ailinux": mcp_server_config
+                }
+            }
+        else:
+            # Default format
+            config = {
+                "mcpServers": {
+                    "ailinux": mcp_server_config
+                }
+            }
 
         return config
+
+    def get_config_path(self, agent_name: str) -> Path:
+        """Get the config file path for an agent"""
+        return self.config_dir / f"{agent_name}-mcp.json"
+
+    def launch_agent(self, agent: CLIAgent, working_dir: str = None) -> Optional[subprocess.Popen]:
+        """
+        Launch a CLI agent with MCP config.
+
+        Returns the subprocess handle or None if launch failed.
+        """
+        if not agent.mcp_supported:
+            logger.warning(f"Agent {agent.name} does not support MCP")
+            return None
+
+        config_path = self.get_config_path(agent.name)
+        if not config_path.exists():
+            # Generate config if not exists
+            self.generate_config_for_agent(agent.name)
+
+        # Build launch command based on agent type
+        env = os.environ.copy()
+        env.update(self.get_agent_env())
+
+        cmd = []
+        if agent.name == "claude":
+            cmd = [agent.path, "--mcp-config", str(config_path)]
+        elif agent.name == "gemini":
+            env["GEMINI_MCP_CONFIG"] = str(config_path)
+            cmd = [agent.path]
+        elif agent.name == "codex":
+            cmd = [agent.path, "--mcp", str(config_path)]
+        elif agent.name == "opencode":
+            cmd = [agent.path, "--mcp-config", str(config_path)]
+        else:
+            cmd = [agent.path]
+
+        try:
+            cwd = working_dir or str(Path.home())
+            process = subprocess.Popen(
+                cmd,
+                env=env,
+                cwd=cwd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            logger.info(f"Launched {agent.display_name} with MCP config")
+            return process
+        except Exception as e:
+            logger.error(f"Failed to launch {agent.name}: {e}")
+            return None
+
+    def bootstrap_detected_agents(self, detector: 'CLIAgentDetector') -> Dict[str, bool]:
+        """
+        Bootstrap MCP configs for all detected agents.
+
+        Returns dict of agent_name -> success status.
+        """
+        if not self._bootstrapped:
+            logger.warning("MCP server not bootstrapped - call bootstrap_for_tier first")
+            return {}
+
+        results = {}
+        for agent in detector.detected_agents:
+            if agent.mcp_supported:
+                try:
+                    self.generate_config_for_agent(agent.name)
+                    results[agent.name] = True
+                    logger.info(f"Bootstrapped MCP for {agent.display_name}")
+                except Exception as e:
+                    results[agent.name] = False
+                    logger.error(f"Failed to bootstrap {agent.name}: {e}")
+
+        return results
+
+    def is_bootstrapped(self) -> bool:
+        """Check if MCP server has been bootstrapped"""
+        return self._bootstrapped
 
     def get_available_tools(self) -> List[Dict[str, Any]]:
         """Get list of tools provided by local MCP server"""

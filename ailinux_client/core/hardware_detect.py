@@ -7,10 +7,17 @@ Detects system hardware capabilities for optimal performance:
 - GPU: Vendor, model, VRAM, OpenGL/Vulkan support
 - RAM: Total, available, speed
 - Storage: Type (SSD/HDD), speed
+
+Hardened for binary deployment:
+- Uses psutil as primary method (works in PyInstaller binaries)
+- Graceful fallback to /proc filesystem
+- Safe subprocess calls with proper error handling
+- Works without root permissions
 """
 
 import os
 import re
+import sys
 import logging
 import subprocess
 from dataclasses import dataclass, field
@@ -18,6 +25,70 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 
 logger = logging.getLogger("ailinux.hardware")
+
+# Try to import psutil (primary method for binary compatibility)
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    logger.warning("psutil not available - hardware detection may be limited")
+
+
+def _safe_subprocess(cmd: List[str], timeout: int = 10) -> Optional[str]:
+    """Safely run a subprocess command, returning stdout or None on failure."""
+    try:
+        # Check if command exists first
+        if not _command_exists(cmd[0]):
+            return None
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={**os.environ, 'LC_ALL': 'C'}  # Force consistent locale
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except subprocess.TimeoutExpired:
+        logger.debug(f"Command timed out: {cmd[0]}")
+    except FileNotFoundError:
+        logger.debug(f"Command not found: {cmd[0]}")
+    except PermissionError:
+        logger.debug(f"Permission denied: {cmd[0]}")
+    except Exception as e:
+        logger.debug(f"Subprocess error for {cmd[0]}: {e}")
+    return None
+
+
+def _command_exists(cmd: str) -> bool:
+    """Check if a command exists in PATH."""
+    try:
+        # On Windows, use 'where', on Unix use 'which'
+        check_cmd = 'where' if sys.platform == 'win32' else 'which'
+        result = subprocess.run(
+            [check_cmd, cmd],
+            capture_output=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _safe_read_file(path: str) -> Optional[str]:
+    """Safely read a file, returning content or None on failure."""
+    try:
+        with open(path, 'r') as f:
+            return f.read()
+    except FileNotFoundError:
+        pass
+    except PermissionError:
+        logger.debug(f"Permission denied reading: {path}")
+    except Exception as e:
+        logger.debug(f"Error reading {path}: {e}")
+    return None
 
 
 @dataclass
@@ -159,91 +230,122 @@ class HardwareDetector:
         return info
 
     def _detect_cpu(self) -> CPUInfo:
-        """Detect CPU information from /proc/cpuinfo"""
+        """Detect CPU information using psutil (primary) or /proc/cpuinfo (fallback)"""
         cpu = CPUInfo()
 
-        try:
-            with open('/proc/cpuinfo', 'r') as f:
-                content = f.read()
-
-            # Parse cpuinfo
-            lines = content.split('\n')
-            flags = ""
-
-            for line in lines:
-                if ':' not in line:
-                    continue
-
-                key, value = line.split(':', 1)
-                key = key.strip().lower()
-                value = value.strip()
-
-                if key == 'model name':
-                    cpu.model = value
-                elif key == 'vendor_id':
-                    cpu.vendor = value
-                elif key == 'cpu cores':
-                    cpu.cores = int(value)
-                elif key == 'siblings':
-                    cpu.threads = int(value)
-                elif key == 'cpu mhz':
-                    cpu.frequency_mhz = float(value)
-                elif key == 'cache size':
-                    # Usually L2 or L3
-                    match = re.search(r'(\d+)', value)
-                    if match:
-                        cpu.cache_l3 = int(match.group(1))
-                elif key == 'flags':
-                    flags = value
-
-            # Parse CPU flags for instruction sets
-            if flags:
-                flag_list = flags.split()
-                cpu.sse = 'sse' in flag_list
-                cpu.sse2 = 'sse2' in flag_list
-                cpu.sse3 = 'sse3' in flag_list or 'pni' in flag_list
-                cpu.ssse3 = 'ssse3' in flag_list
-                cpu.sse4_1 = 'sse4_1' in flag_list
-                cpu.sse4_2 = 'sse4_2' in flag_list
-                cpu.avx = 'avx' in flag_list
-                cpu.avx2 = 'avx2' in flag_list
-                cpu.avx512 = any(f.startswith('avx512') for f in flag_list)
-                cpu.aes = 'aes' in flag_list or 'aes-ni' in flag_list
-                cpu.fma = 'fma' in flag_list or 'fma3' in flag_list
-                cpu.hyperthreading = 'ht' in flag_list
-                cpu.virtualization = 'vmx' in flag_list or 'svm' in flag_list
-
-            # Get max frequency
+        # Method 1: Use psutil (works in binary deployments)
+        if HAS_PSUTIL:
             try:
-                max_freq_path = '/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq'
-                if os.path.exists(max_freq_path):
-                    with open(max_freq_path) as f:
-                        cpu.frequency_max_mhz = int(f.read().strip()) / 1000
-            except Exception:
+                cpu.cores = psutil.cpu_count(logical=False) or 1
+                cpu.threads = psutil.cpu_count(logical=True) or cpu.cores
+
+                # Get CPU frequency
+                freq = psutil.cpu_freq()
+                if freq:
+                    cpu.frequency_mhz = freq.current or 0
+                    cpu.frequency_max_mhz = freq.max or cpu.frequency_mhz
+
+                # Hyperthreading detection
+                cpu.hyperthreading = cpu.threads > cpu.cores
+
+                logger.debug("CPU info retrieved via psutil")
+            except Exception as e:
+                logger.debug(f"psutil CPU detection partial: {e}")
+
+        # Method 2: Read /proc/cpuinfo for detailed info (Linux)
+        content = _safe_read_file('/proc/cpuinfo')
+        if content:
+            try:
+                lines = content.split('\n')
+                flags = ""
+
+                for line in lines:
+                    if ':' not in line:
+                        continue
+
+                    key, value = line.split(':', 1)
+                    key = key.strip().lower()
+                    value = value.strip()
+
+                    if key == 'model name' and cpu.model == "Unknown":
+                        cpu.model = value
+                    elif key == 'vendor_id' and cpu.vendor == "Unknown":
+                        cpu.vendor = value
+                    elif key == 'cpu cores' and cpu.cores == 1:
+                        cpu.cores = int(value)
+                    elif key == 'siblings' and cpu.threads == 1:
+                        cpu.threads = int(value)
+                    elif key == 'cpu mhz' and cpu.frequency_mhz == 0:
+                        cpu.frequency_mhz = float(value)
+                    elif key == 'cache size':
+                        match = re.search(r'(\d+)', value)
+                        if match:
+                            cpu.cache_l3 = int(match.group(1))
+                    elif key == 'flags':
+                        flags = value
+
+                # Parse CPU flags for instruction sets
+                if flags:
+                    flag_list = flags.split()
+                    cpu.sse = 'sse' in flag_list
+                    cpu.sse2 = 'sse2' in flag_list
+                    cpu.sse3 = 'sse3' in flag_list or 'pni' in flag_list
+                    cpu.ssse3 = 'ssse3' in flag_list
+                    cpu.sse4_1 = 'sse4_1' in flag_list
+                    cpu.sse4_2 = 'sse4_2' in flag_list
+                    cpu.avx = 'avx' in flag_list
+                    cpu.avx2 = 'avx2' in flag_list
+                    cpu.avx512 = any(f.startswith('avx512') for f in flag_list)
+                    cpu.aes = 'aes' in flag_list or 'aes-ni' in flag_list
+                    cpu.fma = 'fma' in flag_list or 'fma3' in flag_list
+                    cpu.hyperthreading = 'ht' in flag_list or cpu.threads > cpu.cores
+                    cpu.virtualization = 'vmx' in flag_list or 'svm' in flag_list
+            except Exception as e:
+                logger.debug(f"/proc/cpuinfo parsing error: {e}")
+
+        # Method 3: Try lscpu as fallback for model name
+        if cpu.model == "Unknown":
+            output = _safe_subprocess(['lscpu'])
+            if output:
+                for line in output.split('\n'):
+                    if 'Model name:' in line:
+                        cpu.model = line.split(':', 1)[1].strip()
+                        break
+                    elif 'Vendor ID:' in line and cpu.vendor == "Unknown":
+                        cpu.vendor = line.split(':', 1)[1].strip()
+
+        # Get max frequency from sysfs
+        max_freq_content = _safe_read_file('/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq')
+        if max_freq_content and cpu.frequency_max_mhz == 0:
+            try:
+                cpu.frequency_max_mhz = int(max_freq_content.strip()) / 1000
+            except ValueError:
                 pass
 
-            # Detect architecture
+        # Detect architecture
+        try:
             cpu.architecture = os.uname().machine
+        except Exception:
+            cpu.architecture = "x86_64"  # Safe default
 
-        except Exception as e:
-            logger.error(f"CPU detection failed: {e}")
+        # Final fallback for missing values
+        if cpu.cores == 0:
+            cpu.cores = 1
+        if cpu.threads == 0:
+            cpu.threads = cpu.cores
 
         return cpu
 
     def _detect_gpus(self) -> List[GPUInfo]:
-        """Detect GPU information"""
+        """Detect GPU information using multiple methods for binary compatibility"""
         gpus = []
 
-        # Try lspci first
-        try:
-            result = subprocess.run(
-                ['lspci', '-v', '-nn'],
-                capture_output=True, text=True, timeout=10
-            )
-
-            if result.returncode == 0:
+        # Method 1: Try lspci (most reliable on Linux)
+        output = _safe_subprocess(['lspci', '-v', '-nn'])
+        if output:
+            try:
                 current_gpu = None
-                for line in result.stdout.split('\n'):
+                for line in output.split('\n'):
                     # VGA compatible controller or 3D controller
                     if 'VGA' in line or '3D controller' in line or 'Display controller' in line:
                         if current_gpu:
@@ -270,16 +372,47 @@ class HardwareDetector:
 
                 if current_gpu:
                     gpus.append(current_gpu)
+            except Exception as e:
+                logger.debug(f"lspci parsing error: {e}")
 
-        except Exception as e:
-            logger.warning(f"lspci failed: {e}")
+        # Method 2: Check /sys/class/drm for GPU info
+        if not gpus:
+            try:
+                drm_path = Path('/sys/class/drm')
+                if drm_path.exists():
+                    for card in drm_path.iterdir():
+                        if card.name.startswith('card') and not '-' in card.name:
+                            gpu = GPUInfo()
+                            # Try to read device info
+                            device_path = card / 'device'
+                            if (device_path / 'vendor').exists():
+                                vendor_id = _safe_read_file(str(device_path / 'vendor'))
+                                if vendor_id:
+                                    vendor_id = vendor_id.strip()
+                                    if vendor_id == '0x10de':
+                                        gpu.vendor = "NVIDIA"
+                                    elif vendor_id == '0x1002':
+                                        gpu.vendor = "AMD"
+                                    elif vendor_id == '0x8086':
+                                        gpu.vendor = "Intel"
+                            gpus.append(gpu)
+            except Exception as e:
+                logger.debug(f"/sys/class/drm read error: {e}")
 
-        # Enhance with nvidia-smi for NVIDIA cards
+        # Method 3: Check environment variable for Mesa/DRI info
+        if not gpus:
+            dri_prime = os.environ.get('DRI_PRIME', '')
+            if dri_prime:
+                gpu = GPUInfo()
+                gpu.model = "DRI Device"
+                gpus.append(gpu)
+
+        # Enhance NVIDIA GPUs with nvidia-smi
         for gpu in gpus:
             if gpu.vendor == "NVIDIA":
                 self._enhance_nvidia_info(gpu)
 
-        # Check OpenGL/Vulkan
+        # Check OpenGL/Vulkan capabilities
         self._detect_graphics_apis(gpus)
 
         # If no GPUs found, create a basic entry
@@ -292,16 +425,16 @@ class HardwareDetector:
         return gpus
 
     def _enhance_nvidia_info(self, gpu: GPUInfo):
-        """Get additional info for NVIDIA GPUs"""
-        try:
-            result = subprocess.run(
-                ['nvidia-smi', '--query-gpu=name,memory.total,driver_version,cuda_version',
-                 '--format=csv,noheader,nounits'],
-                capture_output=True, text=True, timeout=10
-            )
+        """Get additional info for NVIDIA GPUs using nvidia-smi"""
+        output = _safe_subprocess([
+            'nvidia-smi',
+            '--query-gpu=name,memory.total,driver_version,cuda_version',
+            '--format=csv,noheader,nounits'
+        ])
 
-            if result.returncode == 0:
-                parts = result.stdout.strip().split(',')
+        if output:
+            try:
+                parts = output.strip().split(',')
                 if len(parts) >= 4:
                     gpu.model = parts[0].strip()
                     gpu.vram_mb = int(float(parts[1].strip()))
@@ -310,148 +443,288 @@ class HardwareDetector:
                     gpu.hardware_accel = True
                     gpu.video_decode = True
                     gpu.video_encode = True
-
-        except Exception as e:
-            logger.debug(f"nvidia-smi not available: {e}")
+            except (ValueError, IndexError) as e:
+                logger.debug(f"nvidia-smi output parsing error: {e}")
 
     def _detect_graphics_apis(self, gpus: List[GPUInfo]):
-        """Detect OpenGL and Vulkan versions"""
-        # OpenGL version
-        try:
-            result = subprocess.run(
-                ['glxinfo'], capture_output=True, text=True, timeout=10
-            )
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if 'OpenGL version' in line:
-                        match = re.search(r'(\d+\.\d+)', line)
-                        if match:
-                            for gpu in gpus:
-                                gpu.opengl_version = match.group(1)
-                                gpu.hardware_accel = True
-                        break
-        except Exception:
-            pass
+        """Detect OpenGL and Vulkan versions using safe subprocess calls"""
+        # OpenGL version via glxinfo
+        output = _safe_subprocess(['glxinfo'])
+        if output:
+            for line in output.split('\n'):
+                if 'OpenGL version' in line:
+                    match = re.search(r'(\d+\.\d+)', line)
+                    if match:
+                        for gpu in gpus:
+                            gpu.opengl_version = match.group(1)
+                            gpu.hardware_accel = True
+                    break
 
-        # Vulkan version
-        try:
-            result = subprocess.run(
-                ['vulkaninfo', '--summary'], capture_output=True, text=True, timeout=10
-            )
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if 'apiVersion' in line:
-                        match = re.search(r'(\d+\.\d+\.\d+)', line)
-                        if match:
-                            for gpu in gpus:
-                                gpu.vulkan_version = match.group(1)
-                        break
-        except Exception:
-            pass
+        # Vulkan version via vulkaninfo
+        output = _safe_subprocess(['vulkaninfo', '--summary'])
+        if output:
+            for line in output.split('\n'):
+                if 'apiVersion' in line:
+                    match = re.search(r'(\d+\.\d+\.\d+)', line)
+                    if match:
+                        for gpu in gpus:
+                            gpu.vulkan_version = match.group(1)
+                    break
+
+        # Fallback: Check for Vulkan ICD files
+        if not any(g.vulkan_version for g in gpus):
+            vulkan_icd_paths = [
+                '/etc/vulkan/icd.d',
+                '/usr/share/vulkan/icd.d',
+                str(Path.home() / '.local/share/vulkan/icd.d')
+            ]
+            for icd_path in vulkan_icd_paths:
+                if Path(icd_path).exists():
+                    for gpu in gpus:
+                        gpu.vulkan_version = "available"
+                    break
 
     def _detect_memory(self) -> MemoryInfo:
-        """Detect memory information from /proc/meminfo"""
+        """Detect memory information using psutil (primary) or /proc/meminfo (fallback)"""
         mem = MemoryInfo()
 
-        try:
-            with open('/proc/meminfo', 'r') as f:
-                for line in f:
+        # Method 1: Use psutil (works in binary deployments)
+        if HAS_PSUTIL:
+            try:
+                vmem = psutil.virtual_memory()
+                mem.total_mb = vmem.total // (1024 * 1024)
+                mem.available_mb = vmem.available // (1024 * 1024)
+                mem.used_mb = vmem.used // (1024 * 1024)
+
+                swap = psutil.swap_memory()
+                mem.swap_total_mb = swap.total // (1024 * 1024)
+                mem.swap_used_mb = swap.used // (1024 * 1024)
+
+                logger.debug("Memory info retrieved via psutil")
+            except Exception as e:
+                logger.debug(f"psutil memory detection error: {e}")
+
+        # Method 2: Read /proc/meminfo for additional/fallback info
+        content = _safe_read_file('/proc/meminfo')
+        if content:
+            try:
+                for line in content.split('\n'):
                     parts = line.split()
                     if len(parts) >= 2:
                         key = parts[0].rstrip(':')
                         value = int(parts[1])  # KB
 
-                        if key == 'MemTotal':
+                        if key == 'MemTotal' and mem.total_mb == 0:
                             mem.total_mb = value // 1024
-                        elif key == 'MemAvailable':
+                        elif key == 'MemAvailable' and mem.available_mb == 0:
                             mem.available_mb = value // 1024
-                        elif key == 'SwapTotal':
+                        elif key == 'SwapTotal' and mem.swap_total_mb == 0:
                             mem.swap_total_mb = value // 1024
-                        elif key == 'SwapFree':
+                        elif key == 'SwapFree' and mem.swap_used_mb == 0:
                             mem.swap_used_mb = mem.swap_total_mb - (value // 1024)
 
-            mem.used_mb = mem.total_mb - mem.available_mb
+                if mem.used_mb == 0:
+                    mem.used_mb = mem.total_mb - mem.available_mb
+            except Exception as e:
+                logger.debug(f"/proc/meminfo parsing error: {e}")
 
-            # Try to get memory speed from dmidecode
-            try:
-                result = subprocess.run(
-                    ['sudo', 'dmidecode', '-t', 'memory'],
-                    capture_output=True, text=True, timeout=10
-                )
-                if result.returncode == 0:
-                    for line in result.stdout.split('\n'):
-                        if 'Speed:' in line and 'MHz' in line:
-                            match = re.search(r'(\d+)\s*MHz', line)
-                            if match:
-                                mem.speed_mhz = int(match.group(1))
-                                break
-                        if 'Type:' in line and 'DDR' in line:
-                            match = re.search(r'(DDR\d?)', line)
-                            if match:
-                                mem.type = match.group(1)
-            except Exception:
-                pass
+        # Method 3: Try to get memory speed/type from dmidecode (requires root, skip silently if fails)
+        # Note: We don't use sudo in binary deployments - only try if already running as root
+        if os.geteuid() == 0:
+            output = _safe_subprocess(['dmidecode', '-t', 'memory'])
+            if output:
+                for line in output.split('\n'):
+                    if 'Speed:' in line and 'MHz' in line and mem.speed_mhz == 0:
+                        match = re.search(r'(\d+)\s*MHz', line)
+                        if match:
+                            mem.speed_mhz = int(match.group(1))
+                    if 'Type:' in line and 'DDR' in line and mem.type == "Unknown":
+                        match = re.search(r'(DDR\d?)', line)
+                        if match:
+                            mem.type = match.group(1)
 
-        except Exception as e:
-            logger.error(f"Memory detection failed: {e}")
+        # Final fallback for missing values
+        if mem.total_mb == 0:
+            mem.total_mb = 4096  # Assume 4GB minimum
+        if mem.available_mb == 0:
+            mem.available_mb = mem.total_mb // 2
 
         return mem
 
     def _detect_storage(self) -> List[StorageInfo]:
-        """Detect storage devices"""
+        """Detect storage devices using psutil (primary) or lsblk (fallback)"""
         storage_list = []
 
-        try:
-            # List block devices
-            result = subprocess.run(
-                ['lsblk', '-d', '-o', 'NAME,SIZE,ROTA,MODEL', '-n', '-b'],
-                capture_output=True, text=True, timeout=10
-            )
+        # Method 1: Use psutil for disk partitions
+        if HAS_PSUTIL:
+            try:
+                partitions = psutil.disk_partitions(all=False)
+                seen_devices = set()
 
-            if result.returncode == 0:
-                for line in result.stdout.strip().split('\n'):
-                    parts = line.split(None, 3)
-                    if len(parts) >= 3:
-                        storage = StorageInfo()
-                        storage.device = f"/dev/{parts[0]}"
+                for part in partitions:
+                    # Extract base device name (e.g., /dev/sda from /dev/sda1)
+                    device = part.device
+                    base_device = re.sub(r'p?\d+$', '', device)
 
-                        try:
-                            storage.size_gb = int(parts[1]) / (1024**3)
-                        except ValueError:
-                            pass
+                    if base_device in seen_devices:
+                        continue
+                    seen_devices.add(base_device)
 
-                        storage.rotational = parts[2] == '1'
-                        storage.type = "HDD" if storage.rotational else "SSD"
+                    storage = StorageInfo()
+                    storage.device = base_device
 
-                        # Check for NVMe
-                        if 'nvme' in parts[0]:
-                            storage.type = "NVMe"
+                    # Get disk usage for this mountpoint
+                    try:
+                        usage = psutil.disk_usage(part.mountpoint)
+                        storage.size_gb = usage.total / (1024**3)
+                    except Exception:
+                        pass
 
-                        if len(parts) > 3:
-                            storage.model = parts[3]
+                    # Determine type from device name
+                    if 'nvme' in device:
+                        storage.type = "NVMe"
+                        storage.rotational = False
+                    elif 'sd' in device or 'vd' in device:
+                        # Check rotational flag from sysfs
+                        rotational_path = f'/sys/block/{Path(base_device).name}/queue/rotational'
+                        rot_content = _safe_read_file(rotational_path)
+                        if rot_content:
+                            storage.rotational = rot_content.strip() == '1'
+                            storage.type = "HDD" if storage.rotational else "SSD"
+                        else:
+                            storage.type = "SSD"  # Assume SSD if can't determine
+                            storage.rotational = False
 
-                        # Only add real storage devices (skip loop, dm, etc)
-                        if parts[0].startswith(('sd', 'nvme', 'vd', 'hd')):
+                    storage_list.append(storage)
+            except Exception as e:
+                logger.debug(f"psutil disk detection error: {e}")
+
+        # Method 2: Use lsblk for more detailed info
+        if not storage_list:
+            output = _safe_subprocess(['lsblk', '-d', '-o', 'NAME,SIZE,ROTA,MODEL', '-n', '-b'])
+            if output:
+                try:
+                    for line in output.strip().split('\n'):
+                        if not line.strip():
+                            continue
+                        parts = line.split(None, 3)
+                        if len(parts) >= 3:
+                            storage = StorageInfo()
+                            storage.device = f"/dev/{parts[0]}"
+
+                            try:
+                                storage.size_gb = int(parts[1]) / (1024**3)
+                            except ValueError:
+                                pass
+
+                            storage.rotational = parts[2] == '1'
+                            storage.type = "HDD" if storage.rotational else "SSD"
+
+                            # Check for NVMe
+                            if 'nvme' in parts[0]:
+                                storage.type = "NVMe"
+
+                            if len(parts) > 3:
+                                storage.model = parts[3]
+
+                            # Only add real storage devices (skip loop, dm, etc)
+                            if parts[0].startswith(('sd', 'nvme', 'vd', 'hd')):
+                                storage_list.append(storage)
+                except Exception as e:
+                    logger.debug(f"lsblk parsing error: {e}")
+
+        # Method 3: Fall back to reading /sys/block directly
+        if not storage_list:
+            try:
+                sys_block = Path('/sys/block')
+                if sys_block.exists():
+                    for device_dir in sys_block.iterdir():
+                        name = device_dir.name
+                        if name.startswith(('sd', 'nvme', 'vd', 'hd')):
+                            storage = StorageInfo()
+                            storage.device = f"/dev/{name}"
+
+                            # Try to get size
+                            size_content = _safe_read_file(str(device_dir / 'size'))
+                            if size_content:
+                                try:
+                                    # Size is in 512-byte sectors
+                                    storage.size_gb = (int(size_content.strip()) * 512) / (1024**3)
+                                except ValueError:
+                                    pass
+
+                            # Check rotational
+                            rot_content = _safe_read_file(str(device_dir / 'queue/rotational'))
+                            if rot_content:
+                                storage.rotational = rot_content.strip() == '1'
+                                storage.type = "HDD" if storage.rotational else "SSD"
+                            elif 'nvme' in name:
+                                storage.type = "NVMe"
+                                storage.rotational = False
+
+                            # Try to get model
+                            model_content = _safe_read_file(str(device_dir / 'device/model'))
+                            if model_content:
+                                storage.model = model_content.strip()
+
                             storage_list.append(storage)
-
-        except Exception as e:
-            logger.error(f"Storage detection failed: {e}")
+            except Exception as e:
+                logger.debug(f"/sys/block read error: {e}")
 
         return storage_list
 
     def _get_kernel_version(self) -> str:
-        """Get kernel version"""
-        return os.uname().release
+        """Get kernel version safely"""
+        try:
+            return os.uname().release
+        except Exception:
+            # Try reading from /proc/version
+            content = _safe_read_file('/proc/version')
+            if content:
+                match = re.search(r'Linux version (\S+)', content)
+                if match:
+                    return match.group(1)
+            return "Unknown"
 
     def _get_distro(self) -> str:
-        """Get Linux distribution name"""
-        try:
-            with open('/etc/os-release', 'r') as f:
-                for line in f:
-                    if line.startswith('PRETTY_NAME='):
-                        return line.split('=', 1)[1].strip().strip('"')
-        except Exception:
-            pass
+        """Get Linux distribution name safely"""
+        # Method 1: Read /etc/os-release (most reliable)
+        content = _safe_read_file('/etc/os-release')
+        if content:
+            for line in content.split('\n'):
+                if line.startswith('PRETTY_NAME='):
+                    return line.split('=', 1)[1].strip().strip('"')
+
+        # Method 2: Try /etc/lsb-release
+        content = _safe_read_file('/etc/lsb-release')
+        if content:
+            for line in content.split('\n'):
+                if line.startswith('DISTRIB_DESCRIPTION='):
+                    return line.split('=', 1)[1].strip().strip('"')
+
+        # Method 3: Try lsb_release command
+        output = _safe_subprocess(['lsb_release', '-d'])
+        if output:
+            parts = output.split(':', 1)
+            if len(parts) > 1:
+                return parts[1].strip()
+
+        # Method 4: Check for specific distro files
+        distro_files = [
+            ('/etc/debian_version', 'Debian'),
+            ('/etc/redhat-release', None),  # Read content
+            ('/etc/fedora-release', None),
+            ('/etc/arch-release', 'Arch Linux'),
+            ('/etc/gentoo-release', None),
+        ]
+        for path, default_name in distro_files:
+            if Path(path).exists():
+                if default_name:
+                    return default_name
+                content = _safe_read_file(path)
+                if content:
+                    return content.strip()[:50]  # Limit length
+
         return "Unknown Linux"
 
     def _calc_recommended_threads(self, cpu: CPUInfo) -> int:
@@ -477,6 +750,7 @@ class HardwareDetector:
             'thread_count': info.recommended_threads,
             'enable_vsync': info.gpu_acceleration,
             'cache_size_mb': min(256, info.memory.total_mb // 16),
+            'vulkan_available': info.vulkan_available,
         }
 
         # Performance tier
@@ -486,6 +760,14 @@ class HardwareDetector:
             hints['performance_tier'] = 'medium'
         else:
             hints['performance_tier'] = 'low'
+        
+        # Vulkan recommendation: Use if available AND high-performance tier
+        # Vulkan has better performance but may have driver issues on some systems
+        hints['recommend_vulkan'] = (
+            info.vulkan_available and 
+            hints['performance_tier'] == 'high' and
+            any(g.vendor in ('NVIDIA', 'AMD') for g in info.gpus)
+        )
 
         return hints
 
