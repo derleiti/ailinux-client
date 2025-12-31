@@ -227,9 +227,22 @@ class SearchableModelSelector(QWidget):
             self._show_popup()
 
     def _show_popup(self):
-        """Show popup"""
-        # Position popup below button
-        pos = self.select_btn.mapToGlobal(self.select_btn.rect().bottomLeft())
+        """Show popup above the button"""
+        # Calculate popup height (estimate based on content)
+        popup_height = self.popup.sizeHint().height()
+        if popup_height < 100:
+            popup_height = 400  # Default height
+        
+        # Position popup ABOVE the button
+        btn_pos = self.select_btn.mapToGlobal(self.select_btn.rect().topLeft())
+        pos = btn_pos
+        pos.setY(btn_pos.y() - popup_height)
+        
+        # Ensure popup doesn't go off-screen at the top
+        if pos.y() < 0:
+            # Fall back to below button if not enough space above
+            pos = self.select_btn.mapToGlobal(self.select_btn.rect().bottomLeft())
+        
         self.popup.move(pos)
         self.popup.show()
         self.popup_visible = True

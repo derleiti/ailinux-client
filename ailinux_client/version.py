@@ -1,5 +1,5 @@
 """AILinux Client Version"""
-VERSION = "4.1.1-beta"
-BUILD_DATE = "2025-12-18"
+VERSION = "4.3.0"
+BUILD_DATE = "2025-12-31"
 API_VERSION = "v1"
-CODENAME = "TriForce"
+CODENAME = "Brumo"

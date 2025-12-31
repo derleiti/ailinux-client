@@ -6,6 +6,7 @@ from .local_mcp import LocalMCPExecutor
 from .cli_agents import CLIAgentDetector, agent_detector, LocalMCPServer, local_mcp_server, CLIAgent
 from .sudo_manager import SudoManager, get_sudo_manager, sudo_run, sudo_restart_service, sudo_write_file
 from .model_sync import ModelSyncManager, ModelInfo, get_model_sync, init_model_sync
+from .syslogger import syslog, DevOpsSyslogger, get_logger, log_function_call
 
 __all__ = [
     "APIClient",
@@ -24,4 +25,8 @@ __all__ = [
     "ModelInfo",
     "get_model_sync",
     "init_model_sync",
+    "syslog",
+    "DevOpsSyslogger",
+    "get_logger",
+    "log_function_call",
 ]

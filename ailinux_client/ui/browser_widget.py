@@ -25,6 +25,15 @@ from pathlib import Path
 
 logger = logging.getLogger("ailinux.browser")
 
+# Tor Integration
+try:
+    from ..core.tor_manager import get_tor_manager, apply_tor_proxy_to_browser
+    from .tor_toggle import TorToggleWidget, TorStatusIndicator
+    HAS_TOR_SUPPORT = True
+except ImportError:
+    HAS_TOR_SUPPORT = False
+    logger.warning("Tor support not available")
+
 # Try to import encrypted settings
 try:
     from ..core.encrypted_settings import get_encrypted_settings
@@ -359,9 +368,22 @@ class BrowserTab(QWidget):
 
     # Class-level persistent profile (shared across all tabs)
     _profile = None
+    _tor_profile = None  # Separates Inkognito-Profil für Tor
 
     @classmethod
-    def get_profile(cls):
+    def get_profile(cls, tor_mode: bool = False):
+        """
+        Get or create browser profile.
+        
+        Args:
+            tor_mode: If True, returns Tor-Inkognito profile (no cookies/cache/history)
+        """
+        if tor_mode:
+            return cls._get_tor_profile()
+        return cls._get_normal_profile()
+    
+    @classmethod
+    def _get_normal_profile(cls):
         """Get or create the persistent browser profile with GPU optimization"""
         if cls._profile is None:
             from pathlib import Path
@@ -432,9 +454,75 @@ class BrowserTab(QWidget):
 
         return cls._profile
 
-    def __init__(self, url: str = "https://search.ailinux.me", parent=None):
+    @classmethod
+    def _get_tor_profile(cls):
+        """
+        Tor-Inkognito-Profil erstellen.
+        
+        Features:
+        - Keine persistenten Cookies (Session-only)
+        - Kein Cache
+        - Keine History
+        - Passwort-Autofill über encrypted_settings BLEIBT verfügbar
+        - Tor-spezifischer User-Agent
+        """
+        if cls._tor_profile is None:
+            from pathlib import Path
+            import os
+            
+            # Temporäres Verzeichnis für Session-Daten
+            tor_path = Path.home() / ".config" / "ailinux" / "browser_tor"
+            tor_path.mkdir(parents=True, exist_ok=True)
+            
+            # Inkognito-artiges Profil (benanntes Profil für Isolation)
+            cls._tor_profile = QWebEngineProfile("ailinux_tor", None)
+            
+            # KEINE persistente Speicherung
+            cls._tor_profile.setPersistentStoragePath("")  # Leer = kein Storage
+            cls._tor_profile.setCachePath("")  # Kein Cache
+            
+            # NUR Session-Cookies (werden bei Schließen gelöscht)
+            cls._tor_profile.setPersistentCookiesPolicy(
+                QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies
+            )
+            
+            # Keine History speichern
+            cls._tor_profile.setDownloadPath(str(tor_path / "downloads"))
+            
+            # Browser-Settings (gleich wie normal, aber strenger)
+            settings = cls._tor_profile.settings()
+            settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)  # Strenger
+            settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, False)  # Strenger
+            settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, False)  # KEIN LocalStorage
+            settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.FocusOnNavigationEnabled, True)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, False)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, False)  # Keine Plugins
+            settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.ScreenCaptureEnabled, False)  # Kein Screen-Capture
+            settings.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, False)  # WebGL aus (Fingerprinting)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.Accelerated2dCanvasEnabled, True)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.AutoLoadIconsForPage, False)  # Keine Favicons
+            settings.setAttribute(QWebEngineSettings.WebAttribute.TouchIconsEnabled, False)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.AllowWindowActivationFromJavaScript, False)
+            
+            # Tor Browser User-Agent (Standard für Anonymität)
+            cls._tor_profile.setHttpUserAgent(
+                "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0"
+            )
+            
+            # Do-Not-Track Header
+            cls._tor_profile.setHttpAcceptLanguage("en-US,en;q=0.5")
+            
+            logger.info("Tor-Inkognito profile 'ailinux_tor' created (no cookies/cache/history)")
+        
+        return cls._tor_profile
+
+    def __init__(self, url: str = "https://search.ailinux.me", parent=None, tor_mode: bool = False):
         super().__init__(parent)
         self.settings = QSettings("AILinux", "Client")
+        self._tor_mode = tor_mode
         self.setup_ui(url)
 
     def setup_ui(self, url: str):
@@ -442,8 +530,8 @@ class BrowserTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Get persistent profile
-        profile = BrowserTab.get_profile()
+        # Profil basierend auf Tor-Modus wählen
+        profile = BrowserTab.get_profile(tor_mode=self._tor_mode)
 
         # Create page with our persistent profile
         from PyQt6.QtWebEngineCore import QWebEnginePage
@@ -768,10 +856,11 @@ class ClosableTabBar(QTabBar):
 
 
 class BrowserWidget(QWidget):
-    """Integrierter Browser mit Tabs, Lesezeichen und KI-Integration"""
+    """Integrierter Browser mit Tabs, Lesezeichen, KI-Integration und Tor-Support"""
 
     text_selected = pyqtSignal(str)  # Für KI-Analyse von Text
     url_changed = pyqtSignal(str)
+    tor_status_changed = pyqtSignal(bool)  # True = Tor aktiv
 
     # Search engine URL patterns
     SEARCH_ENGINES = {
@@ -792,6 +881,19 @@ class BrowserWidget(QWidget):
         self._bookmark_buttons = []  # Track bookmark buttons for overflow
         self._hidden_bookmarks = []  # Bookmarks hidden due to overflow
         self.overflow_btn = None
+        
+        # Tor-Support initialisieren
+        self.tor_manager = None
+        self.tor_toggle = None
+        self.tor_indicator = None
+        self._tor_enabled = False
+        if HAS_TOR_SUPPORT:
+            try:
+                self.tor_manager = get_tor_manager()
+                logger.info("TorManager initialized for browser")
+            except Exception as e:
+                logger.warning(f"Could not initialize TorManager: {e}")
+        
         self.setup_ui()
         self._apply_theme_colors()
 
@@ -1093,6 +1195,19 @@ class BrowserWidget(QWidget):
         self.new_tab_btn.clicked.connect(lambda: self.add_tab())
         nav_layout.addWidget(self.new_tab_btn)
 
+        # === TOR TOGGLE ===
+        if HAS_TOR_SUPPORT and self.tor_manager:
+            self.tor_toggle = TorToggleWidget(self.tor_manager)
+            self.tor_toggle.tor_toggled.connect(self._on_tor_toggled)
+            self.tor_toggle.new_identity_requested.connect(self._on_new_tor_identity)
+            nav_layout.addWidget(self.tor_toggle)
+            logger.info("Tor toggle added to browser navigation")
+            
+            # .onion Status-Indikator (neben URL-Bar)
+            self.tor_indicator = TorStatusIndicator()
+        else:
+            logger.info("Tor support not available - toggle not shown")
+
         layout.addLayout(nav_layout)
 
         # Progress Bar
@@ -1144,11 +1259,22 @@ class BrowserWidget(QWidget):
         # Shortcuts
         self.setup_shortcuts()
 
-    def add_tab(self, url: str = None):
-        """Neuen Tab hinzufügen"""
+    def add_tab(self, url: str = None, tor_mode: bool = None):
+        """
+        Neuen Tab hinzufügen.
+        
+        Args:
+            url: URL zum Laden (default: new_tab_url oder homepage)
+            tor_mode: Tor-Inkognito-Modus (default: aktueller Status)
+        """
         if url is None:
             url = self.new_tab_url if self.new_tab_url else self.homepage
-        tab = BrowserTab(url)
+        
+        # Tor-Modus: wenn nicht explizit gesetzt, aktuellen Status nutzen
+        if tor_mode is None:
+            tor_mode = self._tor_enabled
+        
+        tab = BrowserTab(url, tor_mode=tor_mode)
         tab.text_selected.connect(self.text_selected.emit)
         tab.title_changed.connect(lambda title: self.update_tab_title(tab, title))
         tab.url_changed.connect(self.on_url_changed)
@@ -1203,6 +1329,9 @@ class BrowserWidget(QWidget):
             self.url_bar.setText(current_url)
             self.url_changed.emit(current_url)
             self.update_bookmark_button(current_url)
+            
+            # Tor-Indikator für .onion-URLs aktualisieren
+            self._update_tor_indicator(current_url)
 
     def on_loading_progress(self, progress: int):
         """Lade-Fortschritt"""
@@ -1622,3 +1751,112 @@ class BrowserWidget(QWidget):
         """Focus the URL bar"""
         self.url_bar.setFocus()
         self.url_bar.selectAll()
+
+    # =========================================================================
+    # TOR INTEGRATION
+    # =========================================================================
+    
+    def _on_tor_toggled(self, enabled: bool):
+        """
+        Handler wenn Tor ein-/ausgeschaltet wird.
+        
+        - Speichert alle offenen URLs
+        - Schließt alle Tabs
+        - Öffnet neue Tabs mit Tor-Inkognito-Profil (oder normal)
+        - Lädt alle URLs neu
+        
+        Tor-Modus = Inkognito + Passwörter:
+        - Keine Cookies gespeichert
+        - Kein Cache
+        - Keine History
+        - Passwort-Autofill über encrypted_settings BLEIBT verfügbar
+        """
+        self._tor_enabled = enabled
+        
+        # Aktuelle Tab-URLs merken
+        current_urls = []
+        current_index = self.tab_widget.currentIndex()
+        
+        for i in range(self.tab_widget.count()):
+            tab = self.tab_widget.widget(i)
+            if tab and hasattr(tab, 'get_url'):
+                url = tab.get_url()
+                current_urls.append(url)
+        
+        if not current_urls:
+            current_urls = [self.homepage]
+        
+        logger.info(f"Tor {'enabled' if enabled else 'disabled'}, recreating {len(current_urls)} tabs")
+        
+        # Alle Tabs schließen
+        while self.tab_widget.count() > 0:
+            tab = self.tab_widget.widget(0)
+            self.tab_widget.removeTab(0)
+            if tab in self.tabs:
+                self.tabs.remove(tab)
+            tab.deleteLater()
+        
+        # Proxy auf Browser anwenden
+        if HAS_TOR_SUPPORT and self.tor_manager:
+            apply_tor_proxy_to_browser(self, self.tor_manager)
+        
+        # Neue Tabs mit richtigem Profil erstellen
+        for i, url in enumerate(current_urls):
+            # .onion ohne Tor -> zur Homepage
+            if ".onion" in url.lower() and not enabled:
+                url = self.homepage
+            
+            self.add_tab(url, tor_mode=enabled)
+        
+        # Vorherigen aktiven Tab wiederherstellen
+        if 0 <= current_index < self.tab_widget.count():
+            self.tab_widget.setCurrentIndex(current_index)
+        
+        # Status-Meldung
+        if enabled:
+            logger.info("🧅 Tor-Inkognito-Modus aktiviert (keine Cookies/Cache/History)")
+        else:
+            logger.info("🌐 Normal-Modus aktiviert")
+        
+        self.tor_status_changed.emit(enabled)
+    
+    def _reload_with_proxy(self, tab, url: str):
+        """
+        Seite mit aktuellen Proxy-Einstellungen neu laden.
+        
+        Für .onion-Seiten: Nur wenn Tor aktiv, sonst Warnung
+        """
+        if ".onion" in url.lower() and not self._tor_enabled:
+            # .onion ohne Tor -> Warnung und nicht laden
+            QMessageBox.warning(
+                self, "Tor erforderlich",
+                "Diese .onion-Adresse benötigt Tor.\n\n"
+                "Bitte aktiviere den Tor-Modus (🧅 Button)\n"
+                "um Hidden Services zu erreichen."
+            )
+            # Zurück zur Startseite
+            tab.navigate(self.homepage)
+        else:
+            # Normal neu laden
+            tab.web_view.reload()
+    
+    def _on_new_tor_identity(self):
+        """
+        Handler für neue Tor-Identität.
+        
+        Nach IP-Wechsel optional Seite neu laden.
+        """
+        logger.info("New Tor identity requested")
+        # Optional: Nach 2 Sekunden aktuelle Seite neu laden
+        QTimer.singleShot(2000, self.refresh)
+    
+    def _update_tor_indicator(self, url: str):
+        """
+        .onion-Indikator für URL aktualisieren.
+        """
+        if self.tor_indicator:
+            self.tor_indicator.check_url(url)
+    
+    def is_tor_enabled(self) -> bool:
+        """Prüfen ob Tor-Modus aktiv ist."""
+        return self._tor_enabled

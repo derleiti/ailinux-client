@@ -1348,9 +1348,9 @@ class SettingsDialog(QDialog):
         self.server_url.setText(
             self.settings.value("server_url", "https://api.ailinux.me")
         )
-        # Removed: user_id load
-        # Removed: client_id
-        self.client_secret.setText(self.settings.value("client_secret", ""))
+        
+        # Load login email if saved
+        self.login_email.setText(self.settings.value("login_email", ""))
 
         # Desktop - Background
         self.wallpaper_path.setText(self.settings.value("desktop_background", ""))
@@ -1437,9 +1437,7 @@ class SettingsDialog(QDialog):
         """Save settings"""
         # Connection
         self.settings.setValue("server_url", self.server_url.text())
-        # Removed: user_id save
-        # Removed: client_id
-        self.settings.setValue("client_secret", self.client_secret.text())
+        self.settings.setValue("login_email", self.login_email.text())
 
         # Desktop - Background
         self.settings.setValue("desktop_background", self.wallpaper_path.text())
@@ -1525,8 +1523,8 @@ class SettingsDialog(QDialog):
         self.settings.setValue("mcp_enabled", self.mcp_enabled.isChecked())
 
         # Update API client
-        self.api_client.base_url = self.server_url.text()
-        self.api_client.user_id = self.user_id.text()
+        if self.api_client:
+            self.api_client.base_url = self.server_url.text()
 
         # Emit signal to notify components
         self.settings_changed.emit()
@@ -1636,28 +1634,19 @@ class SettingsDialog(QDialog):
     def _test_connection(self):
         """Test server connection"""
         try:
+            if not self.api_client:
+                QMessageBox.warning(self, "Error", "Kein API Client verfügbar")
+                return
+                
             # Update API client
             self.api_client.base_url = self.server_url.text()
-
-            # Test auth
-            if self.client_id.text() and self.client_secret.text():
-                result = self.api_client.get_auth_token(
-                    self.client_id.text(),
-                    self.client_secret.text()
-                )
-                if result:
-                    QMessageBox.information(
-                        self, "Success",
-                        f"Connected!\nTier: {result.get('tier', 'unknown')}"
-                    )
-                    return
 
             # Test basic connection
             tier_info = self.api_client.get_tier_info()
             QMessageBox.information(
                 self, "Success",
-                f"Server reachable!\nTier: {tier_info.get('tier', 'unknown')}"
+                f"Server erreichbar!\nTier: {tier_info.get('tier', 'unknown')}"
             )
 
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Connection failed:\n{e}")
+            QMessageBox.warning(self, "Error", f"Verbindung fehlgeschlagen:\n{e}")

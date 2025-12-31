@@ -309,6 +309,9 @@ class TerminalDisplay(QWidget):
         self.setMinimumSize(200, 100)
 
         self._update_palette()
+        
+        # Initialize color cache early
+        self._init_color_cache()
 
         # Cursor blink
         self.cursor_visible = True
@@ -361,6 +364,10 @@ class TerminalDisplay(QWidget):
         self._load_settings()
         self._update_font_metrics()
         self._update_palette()
+        
+        # CRITICAL: Invalidate color cache to pick up new colors
+        self._color_cache = None
+        self._init_color_cache()
 
         # Update cursor blink
         if self.cursor_blink and not self.cursor_timer.isActive():
@@ -369,7 +376,8 @@ class TerminalDisplay(QWidget):
             self.cursor_timer.stop()
             self.cursor_visible = True
 
-        self.update()
+        # Force full repaint
+        self.repaint()
 
     def _update_font_metrics(self):
         fm = QFontMetrics(self.font)
@@ -609,199 +617,108 @@ class TerminalDisplay(QWidget):
 
         return QColor(default)
 
+    def _init_color_cache(self):
+        """Initialize color cache and fonts - called once on first paint or settings change"""
+        self._color_cache = {}
+        self._bg_qcolor = QColor(self.bg_color)
+        self._fg_qcolor = QColor(self.fg_color)
+        self._sel_qcolor = QColor(self.selection_color)
+        self._sel_fg = QColor("#ffffff")
+        self._cursor_qcolor = QColor(self.cursor_color)
+        self._font_normal = QFont(self.font)
+        self._font_bold = QFont(self.font)
+        self._font_bold.setBold(True)
+
     def paintEvent(self, event):
-        """Optimized paint event with batched drawing, string coalescing, and partial repaints"""
+        """Paint terminal screen - simplified and robust version"""
         if not self.screen:
             return
 
+        # Ensure color cache is initialized
+        if not hasattr(self, '_color_cache') or self._color_cache is None:
+            self._init_color_cache()
+
+        # Safety check for font metrics
+        if self.char_width <= 0 or self.char_height <= 0:
+            self._update_font_metrics()
+            if self.char_width <= 0 or self.char_height <= 0:
+                return  # Can't render without valid metrics
+
         painter = QPainter(self)
-        
-        # Performance: Only enable antialiasing if not in high-frequency update mode
-        if not self._update_pending if hasattr(self, '_update_pending') else True:
-            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.setFont(self._font_normal)
 
-        # Cache colors (avoid repeated QColor construction)
-        if not hasattr(self, '_color_cache'):
-            self._color_cache = {}
-            self._bg_qcolor = QColor(self.bg_color)
-            self._fg_qcolor = QColor(self.fg_color)
-            self._sel_qcolor = QColor(self.selection_color)
-            self._sel_fg = QColor("#ffffff")
-            self._cursor_qcolor = QColor(self.cursor_color)
-            self._font_normal = self.font
-            self._font_bold = QFont(self.font)
-            self._font_bold.setBold(True)
+        # Fill background
+        painter.fillRect(self.rect(), self._bg_qcolor)
 
-        # PERFORMANCE: Clip to dirty region only
-        clip_rect = event.rect()
-        painter.setClipRect(clip_rect)
-        
-        # Calculate visible row range from clip rect
-        first_visible_row = max(0, clip_rect.y() // self.char_height)
-        last_visible_row = min(self.screen.lines, (clip_rect.bottom() // self.char_height) + 1)
-
-        # Background - only repaint dirty region
-        painter.fillRect(clip_rect, self._bg_qcolor)
-
-        # Batch rectangles and text by style for efficient drawing
-        bg_rects = []  # (rect, color)
-        # PERFORMANCE: Coalesce consecutive characters with same style into strings
-        text_runs = []  # (x, y, text_string, fg_color, is_bold)
-
-        # Get history lines if scrolled
-        history_lines = []
-        if self.scroll_offset > 0 and hasattr(self.screen, 'history'):
-            history_lines = list(self.screen.history.top)
-
-        history_len = len(history_lines)
-
-        # PERFORMANCE: Only iterate visible rows
-        for y in range(first_visible_row, last_visible_row):
-            py = y * self.char_height
-            history_idx = history_len - self.scroll_offset + y
+        # Draw each line from pyte screen
+        for row in range(self.screen.lines):
+            if row >= len(self.screen.display):
+                break
+                
+            line = self.screen.display[row]
+            y_pos = row * self.char_height + self.char_height - 4  # Baseline position
             
-            # PERFORMANCE: Coalesce characters into text runs per line
-            current_run_start_x = None
-            current_run_text = ""
-            current_run_fg = None
-            current_run_bold = None
-            current_run_y = py + self.char_height - 3
-
-            if self.scroll_offset > 0 and 0 <= history_idx < history_len:
-                # History line
-                line = history_lines[history_idx]
-                for x in range(self.screen.columns):
-                    char_data = line.get(x) if isinstance(line, dict) else (line[x] if x < len(line) else None)
-
-                    if char_data is None:
-                        # Flush current run if any
-                        if current_run_text:
-                            text_runs.append((current_run_start_x, current_run_y, current_run_text, current_run_fg, current_run_bold))
-                            current_run_text = ""
-                            current_run_start_x = None
-                        continue
-
-                    char = getattr(char_data, 'data', None) or (str(char_data) if not isinstance(char_data, str) else char_data)
-                    if not char:
-                        char = ' '
-
-                    fg = self._get_cached_color(getattr(char_data, 'fg', 'default'), self._fg_qcolor)
-                    bg = self._get_cached_color(getattr(char_data, 'bg', 'default'), self._bg_qcolor)
-                    bold = getattr(char_data, 'bold', False)
-                    reverse = getattr(char_data, 'reverse', False)
-
-                    if reverse:
-                        fg, bg = bg, fg
-
-                    is_selected = self._is_selected(x, y)
-                    if is_selected:
-                        bg, fg = self._sel_qcolor, self._sel_fg
-
-                    px = x * self.char_width
-                    if is_selected or bg != self._bg_qcolor:
-                        bg_rects.append((px, py, self.char_width, self.char_height, bg))
-
-                    # PERFORMANCE: Coalesce consecutive chars with same style
-                    if current_run_fg == fg and current_run_bold == bold and char != ' ':
-                        current_run_text += char
-                    else:
-                        # Flush previous run
-                        if current_run_text:
-                            text_runs.append((current_run_start_x, current_run_y, current_run_text, current_run_fg, current_run_bold))
-                        # Start new run (skip spaces)
-                        if char != ' ':
-                            current_run_start_x = px
-                            current_run_text = char
-                            current_run_fg = fg
-                            current_run_bold = bold
-                        else:
-                            current_run_text = ""
-                            current_run_start_x = None
-                
-                # Flush final run for this line
-                if current_run_text:
-                    text_runs.append((current_run_start_x, current_run_y, current_run_text, current_run_fg, current_run_bold))
-            else:
-                # Current screen line
-                screen_y = y if self.scroll_offset == 0 else y - max(0, self.scroll_offset - history_len)
-                if screen_y < 0 or screen_y >= len(self.screen.display):
+            # Draw character by character with colors
+            for col, char in enumerate(line):
+                if not char or char == ' ':
                     continue
-
-                line = self.screen.display[screen_y]
-                for x, char in enumerate(line):
-                    if not char:
-                        char = ' '
-
-                    try:
-                        char_data = self.screen.buffer[screen_y][x]
-                        fg = self._get_cached_color(char_data.fg, self._fg_qcolor)
-                        bg = self._get_cached_color(char_data.bg, self._bg_qcolor)
-                        bold = char_data.bold
-                        reverse = char_data.reverse
-                    except (KeyError, IndexError):
-                        fg, bg = self._fg_qcolor, self._bg_qcolor
-                        bold = reverse = False
-
-                    if reverse:
-                        fg, bg = bg, fg
-
-                    is_selected = self._is_selected(x, y)
-                    if is_selected:
-                        bg, fg = self._sel_qcolor, self._sel_fg
-
-                    px = x * self.char_width
-                    if is_selected or bg != self._bg_qcolor:
-                        bg_rects.append((px, py, self.char_width, self.char_height, bg))
-
-                    # PERFORMANCE: Coalesce consecutive chars with same style
-                    if current_run_fg == fg and current_run_bold == bold and char != ' ':
-                        current_run_text += char
-                    else:
-                        # Flush previous run
-                        if current_run_text:
-                            text_runs.append((current_run_start_x, current_run_y, current_run_text, current_run_fg, current_run_bold))
-                        # Start new run (skip spaces)
-                        if char != ' ':
-                            current_run_start_x = px
-                            current_run_text = char
-                            current_run_fg = fg
-                            current_run_bold = bold
-                        else:
-                            current_run_text = ""
-                            current_run_start_x = None
+                    
+                x_pos = col * self.char_width
                 
-                # Flush final run for this line
-                if current_run_text:
-                    text_runs.append((current_run_start_x, current_run_y, current_run_text, current_run_fg, current_run_bold))
+                # Get character attributes from buffer
+                try:
+                    char_data = self.screen.buffer[row][col]
+                    fg_color = self._get_cached_color(char_data.fg, self._fg_qcolor)
+                    bg_color = self._get_cached_color(char_data.bg, self._bg_qcolor)
+                    is_bold = char_data.bold
+                    is_reverse = char_data.reverse
+                except (KeyError, IndexError, AttributeError):
+                    fg_color = self._fg_qcolor
+                    bg_color = self._bg_qcolor
+                    is_bold = False
+                    is_reverse = False
+                
+                # Handle reverse video
+                if is_reverse:
+                    fg_color, bg_color = bg_color, fg_color
+                
+                # Check selection
+                if self._is_selected(col, row):
+                    bg_color = self._sel_qcolor
+                    fg_color = self._sel_fg
+                
+                # Draw background if not default
+                if bg_color != self._bg_qcolor:
+                    painter.fillRect(x_pos, row * self.char_height, 
+                                   self.char_width, self.char_height, bg_color)
+                
+                # Draw character
+                if is_bold:
+                    painter.setFont(self._font_bold)
+                else:
+                    painter.setFont(self._font_normal)
+                    
+                painter.setPen(fg_color)
+                painter.drawText(x_pos, y_pos, char)
 
-        # Batch draw backgrounds
-        for px, py, w, h, bg in bg_rects:
-            painter.fillRect(px, py, w, h, bg)
-
-        # PERFORMANCE: Draw text runs (coalesced strings) instead of individual chars
-        # This dramatically reduces QPainter state changes and drawText calls
-        current_fg = None
-        current_bold = None
-        for px, py, text_str, fg, bold in text_runs:
-            # Skip invalid entries (px can be None if run was empty)
-            if px is None or text_str is None or not text_str:
-                continue
-            if fg != current_fg:
-                painter.setPen(fg)
-                current_fg = fg
-            if bold != current_bold:
-                painter.setFont(self._font_bold if bold else self._font_normal)
-                current_bold = bold
-            # Draw entire string at once instead of char-by-char
-            painter.drawText(int(px), int(py), text_str)
-
-        # Draw cursor (only if visible in clip region)
-        if self.scroll_offset == 0 and self.cursor_visible and self.hasFocus():
+        # Draw cursor - always visible when terminal has focus (no scroll offset)
+        if self.scroll_offset == 0 and self.cursor_visible:
             cx = self.screen.cursor.x * self.char_width
             cy = self.screen.cursor.y * self.char_height
-            cursor_rect = (cx, cy, self.char_width, self.char_height)
-            if clip_rect.intersects(painter.clipBoundingRect().toRect() if painter.hasClipping() else clip_rect):
-                painter.fillRect(cx, cy, self.char_width, self.char_height, self._cursor_qcolor)
+            
+            # Draw cursor block
+            painter.fillRect(cx, cy, self.char_width, self.char_height, self._cursor_qcolor)
+            
+            # Draw character under cursor in contrasting color
+            if 0 <= self.screen.cursor.y < len(self.screen.display):
+                line = self.screen.display[self.screen.cursor.y]
+                if 0 <= self.screen.cursor.x < len(line):
+                    char = line[self.screen.cursor.x]
+                    if char and char.strip():
+                        painter.setPen(self._bg_qcolor)  # Contrast color
+                        painter.setFont(self._font_normal)
+                        painter.drawText(cx, cy + self.char_height - 3, char)
 
     def _get_cached_color(self, color, default):
         """Get QColor from cache or create new one"""
@@ -1004,9 +921,14 @@ class PyteTerminal(QWidget, KeyCaptureMixin):
             self._update_timer.start(self._update_interval)
 
     def _flush_update(self):
-        """Flush pending display update"""
+        """Flush pending display update - uses repaint() for immediate redraw"""
         self._update_pending = False
-        self.display.update()
+        # Sync the update_pending flag to display for paint optimization
+        if hasattr(self.display, '_update_pending'):
+            self.display._update_pending = False
+        # repaint() is synchronous and immediate, update() is deferred
+        # For terminal output we need immediate feedback
+        self.display.repaint()
 
     def _update_scrollbar(self):
         """Update scrollbar range based on history"""
