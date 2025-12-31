@@ -446,198 +446,198 @@ class MCPNodeClient:
                     self.on_error(str(e))
                 return False
         
-    async def _close_session(self):
-        """Properly close aiohttp session"""
-        if self.websocket and not self.websocket.closed:
-            await self.websocket.close()
-        if self.aio_session and not self.aio_session.closed:
-            await self.aio_session.close()
-        self.websocket = None
-        self.aio_session = None
-        self.state.connected = False
-    
-    async def _send_client_info(self):
-        """Sendet Client-Informationen an Server"""
-        if not self.websocket:
-            return
-    
-        import platform
-    
-        info = {
-            "jsonrpc": "2.0",
-            "method": "client/info",
-            "params": {
-                "session_id": self.session_id,
-                "machine_id": self.machine_id,
-                "user_id": self.api_client.user_id if self.api_client else "",
-                "tier": self.api_client.tier if self.api_client else "free",
-                "platform": platform.system(),
-                "hostname": platform.node(),
-                "python_version": platform.python_version(),
-                "client_version": "1.0.0",
-            "mode": "telemetry_only",
-            }
-        }
-    
-        await self.websocket.send_json(info)
-        logger.debug(f"Sent client info: session={self.session_id}")
-    
-    async def _send_tool_list(self):
-        """Sendet Liste der lokalen Tools an Server"""
-        if not self.websocket:
-            return
-            
-        tools = local_mcp.list_tools()
-        tool_names = [t["name"] for t in tools]
-        
-        message = {
-            "jsonrpc": "2.0",
-            "method": "tools/list",
-            "params": {
-                "tools": tool_names
-            }
-        }
-        
-        await self.websocket.send_json(message)
-        logger.info(f"Sent tool list: {len(tool_names)} tools")
-    
-    async def _message_loop(self):
-        """Empfängt und verarbeitet Nachrichten vom Server"""
-        should_reconnect = False
-        try:
-            async for msg in self.websocket:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    await self._handle_message(data)
-                    
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    logger.error(f"WebSocket error: {self.websocket.exception()}")
-                    should_reconnect = True
-                    break
-                    
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    logger.info("WebSocket closed by server")
-                    should_reconnect = True
-                    break
-                    
-        except asyncio.CancelledError:
-            logger.debug("Message loop cancelled")
-        except Exception as e:
-            logger.error(f"Message loop error: {e}")
-            should_reconnect = True
-        finally:
-            was_running = self._running
-            self._running = False
+        async def _close_session(self):
+            """Properly close aiohttp session"""
+            if self.websocket and not self.websocket.closed:
+                await self.websocket.close()
+            if self.aio_session and not self.aio_session.closed:
+                await self.aio_session.close()
+            self.websocket = None
+            self.aio_session = None
             self.state.connected = False
-            
-            # Close session properly
-            await self._close_session()
-            
-            if self.on_disconnected:
-                self.on_disconnected()
-            
-            # Auto-Reconnect only if we were intentionally running
-            # and connection was lost (not manual disconnect)
-            if was_running and should_reconnect:
-                logger.info(f"Reconnecting in {self._reconnect_delay}s...")
-                await asyncio.sleep(self._reconnect_delay)
-                # Exponential backoff for reconnects
-                self._reconnect_delay = min(self._reconnect_delay * 1.5, 60)
-                self._running = True  # Re-enable for reconnect
-                await self.connect()
     
-    async def _handle_message(self, data: Dict[str, Any]):
-        """Verarbeitet eingehende Nachrichten"""
-        method = data.get("method")
-        request_id = data.get("id")
-        
-        # Verbindungsbestätigung
-        if method == "connected":
-            params = data.get("params", {})
-            self.state.connected = True
-            self.state.client_id = params.get("client_id")
-            self.state.tier = params.get("tier")
-            self.state.available_tools = params.get("available_tools", [])
-            
-            logger.info(f"MCP Node connected: {self.state.client_id} ({self.state.tier})")
-            
-            if self.on_connected:
-                self.on_connected(self.state)
-                
-        # Pong
-        elif method == "pong":
-            self.state.last_ping = datetime.now()
-            
-        # Tool-Call vom Server
-        elif method == "tools/call":
-            params = data.get("params", {})
-            tool_name = params.get("name")
-            arguments = params.get("arguments", {})
-            
-            logger.info(f"Tool call received: {tool_name}")
-            
-            if self.on_tool_call:
-                self.on_tool_call(tool_name, arguments)
-            
-            # Tool ausführen
-            result = await self._execute_tool(tool_name, arguments)
-            
-            # Response senden
-            response = {
+        async def _send_client_info(self):
+            """Sendet Client-Informationen an Server"""
+            if not self.websocket:
+                return
+    
+            import platform
+    
+            info = {
                 "jsonrpc": "2.0",
-                "id": request_id,
+                "method": "client/info",
+                "params": {
+                    "session_id": self.session_id,
+                    "machine_id": self.machine_id,
+                    "user_id": self.api_client.user_id if self.api_client else "",
+                    "tier": self.api_client.tier if self.api_client else "free",
+                    "platform": platform.system(),
+                    "hostname": platform.node(),
+                    "python_version": platform.python_version(),
+                    "client_version": "1.0.0",
+                "mode": "telemetry_only",
+                }
+            }
+    
+            await self.websocket.send_json(info)
+            logger.debug(f"Sent client info: session={self.session_id}")
+        
+        async def _send_tool_list(self):
+            """Sendet Liste der lokalen Tools an Server"""
+            if not self.websocket:
+                return
+                
+            tools = local_mcp.list_tools()
+            tool_names = [t["name"] for t in tools]
+            
+            message = {
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "params": {
+                    "tools": tool_names
+                }
             }
             
-            if result.success:
-                response["result"] = result.content
-            else:
-                response["error"] = {
-                    "code": -32000,
-                    "message": result.error
-                }
-            
-            await self.websocket.send_json(response)
-            logger.info(f"Tool result sent: {tool_name} - success={result.success}")
-    
-    async def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> MCPToolResult:
-        """Führt lokales Tool aus"""
-        # Mapping von Client-Tool-Namen zu lokalen Tools
-        tool_mapping = {
-            "client_file_read": "file_read",
-            "client_file_write": "file_write",
-            "client_file_list": "file_list",
-            "client_shell_exec": "bash_exec",
-            "client_codebase_search": "file_search",
-            "client_git_status": "bash_exec",  # git status als bash
-        }
+            await self.websocket.send_json(message)
+            logger.info(f"Sent tool list: {len(tool_names)} tools")
         
-        local_tool = tool_mapping.get(tool_name, tool_name)
-        
-        # Git Status speziell behandeln
-        if tool_name == "client_git_status":
-            path = arguments.get("path", ".")
-            arguments = {"command": "git status", "cwd": path}
-        
-        return await local_mcp.call_tool(local_tool, arguments)
-    
-    async def _ping_loop(self):
-        """Sendet regelmäßig Pings"""
-        while self._running and self.websocket:
+        async def _message_loop(self):
+            """Empfängt und verarbeitet Nachrichten vom Server"""
+            should_reconnect = False
             try:
-                await self.websocket.send_json({"method": "ping"})
-                await asyncio.sleep(30)
-            except:
-                break
-    
-    async def disconnect(self):
-        """Verbindung trennen (ohne Reconnect)"""
-        self._running = False
-        await self._close_session()
-        logger.info(f"MCP Node client disconnected (session: {self.session_id})")
-    
-    def is_connected(self) -> bool:
-        """Prüft ob verbunden"""
-        return self.state.connected and self.websocket is not None
+                async for msg in self.websocket:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        await self._handle_message(data)
+                        
+                    elif msg.type == aiohttp.WSMsgType.ERROR:
+                        logger.error(f"WebSocket error: {self.websocket.exception()}")
+                        should_reconnect = True
+                        break
+                        
+                    elif msg.type == aiohttp.WSMsgType.CLOSED:
+                        logger.info("WebSocket closed by server")
+                        should_reconnect = True
+                        break
+                        
+            except asyncio.CancelledError:
+                logger.debug("Message loop cancelled")
+            except Exception as e:
+                logger.error(f"Message loop error: {e}")
+                should_reconnect = True
+            finally:
+                was_running = self._running
+                self._running = False
+                self.state.connected = False
+                
+                # Close session properly
+                await self._close_session()
+                
+                if self.on_disconnected:
+                    self.on_disconnected()
+                
+                # Auto-Reconnect only if we were intentionally running
+                # and connection was lost (not manual disconnect)
+                if was_running and should_reconnect:
+                    logger.info(f"Reconnecting in {self._reconnect_delay}s...")
+                    await asyncio.sleep(self._reconnect_delay)
+                    # Exponential backoff for reconnects
+                    self._reconnect_delay = min(self._reconnect_delay * 1.5, 60)
+                    self._running = True  # Re-enable for reconnect
+                    await self.connect()
+        
+        async def _handle_message(self, data: Dict[str, Any]):
+            """Verarbeitet eingehende Nachrichten"""
+            method = data.get("method")
+            request_id = data.get("id")
+            
+            # Verbindungsbestätigung
+            if method == "connected":
+                params = data.get("params", {})
+                self.state.connected = True
+                self.state.client_id = params.get("client_id")
+                self.state.tier = params.get("tier")
+                self.state.available_tools = params.get("available_tools", [])
+                
+                logger.info(f"MCP Node connected: {self.state.client_id} ({self.state.tier})")
+                
+                if self.on_connected:
+                    self.on_connected(self.state)
+                    
+            # Pong
+            elif method == "pong":
+                self.state.last_ping = datetime.now()
+                
+            # Tool-Call vom Server
+            elif method == "tools/call":
+                params = data.get("params", {})
+                tool_name = params.get("name")
+                arguments = params.get("arguments", {})
+                
+                logger.info(f"Tool call received: {tool_name}")
+                
+                if self.on_tool_call:
+                    self.on_tool_call(tool_name, arguments)
+                
+                # Tool ausführen
+                result = await self._execute_tool(tool_name, arguments)
+                
+                # Response senden
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                }
+                
+                if result.success:
+                    response["result"] = result.content
+                else:
+                    response["error"] = {
+                        "code": -32000,
+                        "message": result.error
+                    }
+                
+                await self.websocket.send_json(response)
+                logger.info(f"Tool result sent: {tool_name} - success={result.success}")
+        
+        async def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> MCPToolResult:
+            """Führt lokales Tool aus"""
+            # Mapping von Client-Tool-Namen zu lokalen Tools
+            tool_mapping = {
+                "client_file_read": "file_read",
+                "client_file_write": "file_write",
+                "client_file_list": "file_list",
+                "client_shell_exec": "bash_exec",
+                "client_codebase_search": "file_search",
+                "client_git_status": "bash_exec",  # git status als bash
+            }
+            
+            local_tool = tool_mapping.get(tool_name, tool_name)
+            
+            # Git Status speziell behandeln
+            if tool_name == "client_git_status":
+                path = arguments.get("path", ".")
+                arguments = {"command": "git status", "cwd": path}
+            
+            return await local_mcp.call_tool(local_tool, arguments)
+        
+        async def _ping_loop(self):
+            """Sendet regelmäßig Pings"""
+            while self._running and self.websocket:
+                try:
+                    await self.websocket.send_json({"method": "ping"})
+                    await asyncio.sleep(30)
+                except:
+                    break
+        
+        async def disconnect(self):
+            """Verbindung trennen (ohne Reconnect)"""
+            self._running = False
+            await self._close_session()
+            logger.info(f"MCP Node client disconnected (session: {self.session_id})")
+        
+        def is_connected(self) -> bool:
+            """Prüft ob verbunden"""
+            return self.state.connected and self.websocket is not None
     
 
 # Singleton

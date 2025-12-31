@@ -119,120 +119,170 @@ class MCPStdioServer:
                 timeout=60.0
             )
 
-    async def _bootstrap_telemetry(self):
-        """
-        Bootstrap Telemetrie-Verbindung zum Backend (NUR LESEN, KEIN SCHREIBEN).
-        """
-        # Verhindere doppeltes Bootstrap
-        if self._telemetry_task is not None:
-            logger.debug("Telemetrie bereits gestartet - überspringe")
-            return
+async def _bootstrap_telemetry(self):
+    """
+    Bootstrap Telemetrie-Verbindung zum Backend (NUR LESEN, KEIN SCHREIBEN).
+    """
+    # Verhindere doppeltes Bootstrap
+    if self._telemetry_task is not None:
+        logger.debug("Telemetrie bereits gestartet - überspringe")
+        return
 
-        if self.tier == "free":
-            logger.info("Free tier - Telemetrie nicht gestartet")
-            return
+    if self.tier == "free":
+        logger.info("Free tier - Telemetrie nicht gestartet")
+        return
 
-        try:
-            import aiohttp
-            import ssl
-            import platform
-            import uuid
-            from datetime import datetime
+    try:
+        import aiohttp
+        import ssl
+        import platform
+        import uuid
+        from datetime import datetime
 
-            # Session-ID generieren oder laden
-            session_file = Path.home() / ".config" / "ailinux" / "session_id"
-            if session_file.exists():
-                self.session_id = session_file.read_text().strip()
-            else:
-                self.session_id = f"sess_{uuid.uuid4().hex[:16]}"
-                session_file.parent.mkdir(parents=True, exist_ok=True)
-                session_file.write_text(self.session_id)
+        # Session-ID generieren oder laden
+        session_file = Path.home() / ".config" / "ailinux" / "session_id"
+        if session_file.exists():
+            self.session_id = session_file.read_text().strip()
+        else:
+            self.session_id = f"sess_{uuid.uuid4().hex[:16]}"
+            session_file.parent.mkdir(parents=True, exist_ok=True)
+            session_file.write_text(self.session_id)
 
-            # === mTLS SSL Context ===
-            ssl_ctx = None
-            client_cert = os.getenv("AILINUX_CLIENT_CERT")
-            ca_cert = os.getenv("AILINUX_CA_CERT")
-            wss_port = os.getenv("AILINUX_WSS_PORT", "")
+        # === mTLS SSL Context ===
+        ssl_ctx = None
+        client_cert = os.getenv("AILINUX_CLIENT_CERT")
+        ca_cert = os.getenv("AILINUX_CA_CERT")
+        wss_port = os.getenv("AILINUX_WSS_PORT", "")
 
-            if client_cert and ca_cert and os.path.exists(client_cert) and os.path.exists(ca_cert):
-                ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                ssl_ctx.load_cert_chain(client_cert)
-                ssl_ctx.load_verify_locations(ca_cert)
-                ssl_ctx.check_hostname = False  # Self-signed
-                ssl_ctx.verify_mode = ssl.CERT_REQUIRED
-                logger.info(f"mTLS enabled: {client_cert}")
+        if client_cert and ca_cert and os.path.exists(client_cert) and os.path.exists(ca_cert):
+            ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_ctx.load_cert_chain(client_cert)
+            ssl_ctx.load_verify_locations(ca_cert)
+            ssl_ctx.check_hostname = False  # Self-signed
+            ssl_ctx.verify_mode = ssl.CERT_REQUIRED
+            logger.info(f"mTLS enabled: {client_cert}")
 
-            # WebSocket URL - mit oder ohne separaten Port
-            if wss_port and ssl_ctx:
-                # Neuer mTLS-Port (44433)
-                ws_base = self.server_url.replace("https://", "").replace("http://", "")
-                ws_url = f"wss://{ws_base}:{wss_port}/mcp?session_id={self.session_id}&tier={self.tier}&mode=telemetry"
-            else:
-                # Fallback: Standard-Route mit Token
-                ws_url = self.server_url.replace("https://", "wss://").replace("http://", "ws://")
-                ws_url = f"{ws_url}/v1/mcp/node/connect?token={self.token}&session_id={self.session_id}&tier={self.tier}&mode=telemetry"
+        # WebSocket URL - mit oder ohne separaten Port
+        if wss_port and ssl_ctx:
+            # Neuer mTLS-Port (44433)
+            ws_base = self.server_url.replace("https://", "").replace("http://", "")
+            ws_url = f"wss://{ws_base}:{wss_port}/mcp?session_id={self.session_id}&tier={self.tier}&mode=telemetry"
+        else:
+            # Fallback: Standard-Route mit Token
+            ws_url = self.server_url.replace("https://", "wss://").replace("http://", "ws://")
+            ws_url = f"{ws_url}/v1/mcp/node/connect?token={self.token}&session_id={self.session_id}&tier={self.tier}&mode=telemetry"
 
-            async def telemetry_loop():
-                """Hält WebSocket-Verbindung für Telemetrie"""
-                while True:
-                    try:
-                        connector = aiohttp.TCPConnector(ssl=ssl_ctx) if ssl_ctx else None
-                        async with aiohttp.ClientSession(connector=connector) as session:
-                            async with session.ws_connect(ws_url, heartbeat=30, ssl=ssl_ctx) as ws:
-                                logger.info(f"✅ Telemetrie verbunden (session: {self.session_id})")
-                                self._telemetry_ws = ws
+        async def telemetry_loop():
+            """Hält WebSocket-Verbindung für Telemetrie"""
+            while True:
+                try:
+                    connector = aiohttp.TCPConnector(ssl=ssl_ctx) if ssl_ctx else None
+                    async with aiohttp.ClientSession(connector=connector) as session:
+                        async with session.ws_connect(ws_url, heartbeat=30, ssl=ssl_ctx) as ws:
+                            logger.info(f"✅ Telemetrie verbunden (session: {self.session_id})")
+                            self._telemetry_ws = ws
 
-                                # Client-Info senden
-                                await ws.send_json({
-                                    "jsonrpc": "2.0",
-                                    "method": "client/info",
-                                    "params": {
-                                        "session_id": self.session_id,
-                                        "tier": self.tier,
-                                        "platform": platform.system(),
-                                        "hostname": platform.node(),
-                                        "python_version": platform.python_version(),
-                                        "server_version": self.SERVER_VERSION,
-                                        "mode": "telemetry_only",
-                                        "connected_at": datetime.now().isoformat(),
-                                        "auth": "mtls" if ssl_ctx else "token"
+                            # Client-Info senden
+                            await ws.send_json({
+                                "jsonrpc": "2.0",
+                                "method": "client/info",
+                                "params": {
+                                    "session_id": self.session_id,
+                                    "tier": self.tier,
+                                    "platform": platform.system(),
+                                    "hostname": platform.node(),
+                                    "python_version": platform.python_version(),
+                                    "server_version": self.SERVER_VERSION,
+                                    "mode": "telemetry_only",
+                                    "connected_at": datetime.now().isoformat(),
+                                    "auth": "mtls" if ssl_ctx else "token"
+                                }
+                            })
+
+                            # Message-Loop
+                            async for msg in ws:
+                                if msg.type == aiohttp.WSMsgType.TEXT:
+                                    data = json.loads(msg.data)
+                                    method = data.get("method", "")
+
+                                    if method == "ping":
+                                        await ws.send_json({"method": "pong"})
+                                    elif method == "connected":
+                                        params = data.get("params", {})
+                                        logger.info(f"🔗 Server bestätigt: {params.get('client_id')}")
+                                    elif method == "tools/call":
+                                        logger.warning(f"⚠️ Server wollte Tool aufrufen - IGNORIERT")
+                                        request_id = data.get("id")
+                                        if request_id:
+                                            await ws.send_json({
+                                                "jsonrpc": "2.0",
+                                                "id": request_id,
+                                                "error": {"code": -32600, "message": "Remote execution disabled"}
+                                            })
+
+                                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                    break
+
+                except Exception as e:
+                    logger.error(f"Telemetrie-Fehler: {e}")
+
+                self._telemetry_ws = None
+                logger.warning("⚠️ Telemetrie getrennt - reconnecting in 5s...")
+                await asyncio.sleep(5)
+
+        self._telemetry_task = asyncio.create_task(telemetry_loop())
+        logger.info(f"🚀 Telemetrie gestartet ({'mTLS' if ssl_ctx else 'Token'})")
+
+    except ImportError:
+        logger.warning("aiohttp nicht verfügbar - Telemetrie deaktiviert")
+    except Exception as e:
+        logger.error(f"Telemetrie-Bootstrap fehlgeschlagen: {e}")
                                     }
                                 })
-
-                                # Message-Loop
+                                
+                                # Message-Loop (ignoriert alle Befehle vom Server)
                                 async for msg in ws:
                                     if msg.type == aiohttp.WSMsgType.TEXT:
                                         data = json.loads(msg.data)
                                         method = data.get("method", "")
-
+                                        
+                                        # Pong beantworten
                                         if method == "ping":
                                             await ws.send_json({"method": "pong"})
+                                        
+                                        # Verbindungsbestätigung loggen
                                         elif method == "connected":
                                             params = data.get("params", {})
                                             logger.info(f"🔗 Server bestätigt: {params.get('client_id')}")
+                                        
+                                        # ALLE anderen Befehle ignorieren (keine Remote-Execution!)
                                         elif method == "tools/call":
-                                            logger.warning(f"⚠️ Server wollte Tool aufrufen - IGNORIERT")
+                                            logger.warning(f"⚠️ Server wollte Tool aufrufen - IGNORIERT (telemetry_only mode)")
+                                            # Antwort: Nicht erlaubt
                                             request_id = data.get("id")
                                             if request_id:
                                                 await ws.send_json({
                                                     "jsonrpc": "2.0",
                                                     "id": request_id,
-                                                    "error": {"code": -32600, "message": "Remote execution disabled"}
+                                                    "error": {
+                                                        "code": -32600,
+                                                        "message": "Remote execution disabled (telemetry_only mode)"
+                                                    }
                                                 })
-
+                                    
                                     elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                                         break
-
+                                
                     except Exception as e:
                         logger.error(f"Telemetrie-Fehler: {e}")
-
+                    
                     self._telemetry_ws = None
                     logger.warning("⚠️ Telemetrie getrennt - reconnecting in 5s...")
                     await asyncio.sleep(5)
-
+            
             self._telemetry_task = asyncio.create_task(telemetry_loop())
-            logger.info(f"🚀 Telemetrie gestartet ({'mTLS' if ssl_ctx else 'Token'})")
-
+            logger.info("🚀 Telemetrie gestartet (read-only)")
+            
         except ImportError:
             logger.warning("aiohttp nicht verfügbar - Telemetrie deaktiviert")
         except Exception as e:

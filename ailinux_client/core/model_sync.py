@@ -98,9 +98,9 @@ class ModelSyncManager:
         except:
             return True
     
-    async def sync(self, force: bool = False) -> bool:
+    def sync(self, force: bool = False) -> bool:
         """
-        Synchronisiere Modelle vom Server
+        Synchronisiere Modelle vom Server (synchron)
         
         Args:
             force: Erzwinge Sync auch wenn Cache aktuell
@@ -117,19 +117,51 @@ class ModelSyncManager:
             return False
         
         try:
-            response = await self.api_client.get("/client/models/sync")
+            # Nutze die sync get_models() Methode
+            response = self.api_client.get_models()
             
-            if response and "models" in response:
-                models = [ModelInfo(**m) for m in response["models"]]
+            if response:
+                # Server gibt Liste von Model-IDs zurück
+                model_list = response.get("models", [])
+                tier = response.get("tier", "guest")
+                
+                # Konvertiere zu ModelInfo Objekten
+                models = []
+                for m in model_list:
+                    if isinstance(m, str):
+                        # Model ist nur ID-String
+                        provider = m.split("/")[0] if "/" in m else "unknown"
+                        models.append(ModelInfo(
+                            id=m,
+                            name=m.split("/")[-1] if "/" in m else m,
+                            provider=provider,
+                            category="cloud" if "-cloud" in m else "local",
+                            free=tier in ("guest", "registered")
+                        ))
+                    elif isinstance(m, dict):
+                        # Model ist bereits Dict
+                        models.append(ModelInfo(
+                            id=m.get("id", ""),
+                            name=m.get("name", m.get("id", "")),
+                            provider=m.get("provider", "unknown"),
+                            category=m.get("category", "cloud"),
+                            free=m.get("free", True)
+                        ))
+                
+                # Kategorien zählen
+                categories = {}
+                for m in models:
+                    categories[m.provider] = categories.get(m.provider, 0) + 1
+                
                 self._cache = ModelCache(
-                    tier=response.get("tier", "guest"),
+                    tier=tier,
                     models=models,
-                    categories=response.get("categories", {}),
-                    sync_timestamp=response.get("sync_timestamp", datetime.now().isoformat()),
-                    version=response.get("version", "2.1")
+                    categories=categories,
+                    sync_timestamp=datetime.now().isoformat(),
+                    version="2.2"
                 )
                 self._save_cache()
-                logger.info(f"Synced {len(models)} models from server")
+                logger.info(f"Synced {len(models)} models from server (tier: {tier})")
                 return True
             else:
                 logger.warning("Invalid sync response")
@@ -140,16 +172,8 @@ class ModelSyncManager:
             return False
     
     def sync_blocking(self, force: bool = False) -> bool:
-        """Blocking-Version von sync()"""
-        try:
-            return asyncio.get_event_loop().run_until_complete(self.sync(force))
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(self.sync(force))
-            finally:
-                loop.close()
+        """Blocking-Version von sync() - jetzt identisch da sync() bereits sync ist"""
+        return self.sync(force)
     
     @property
     def models(self) -> List[ModelInfo]:
