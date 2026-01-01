@@ -1,7 +1,7 @@
 """AILinux Client Version"""
-VERSION = "4.3.0"
-BUILD_DATE = "2025-12-31"
-API_VERSION = "v1"
+VERSION = "4.3.3"
+BUILD_DATE = "20260101"
+API_VERSION = "4.3.3"
 CODENAME = "Brumo"
 
 CHANGELOG = """
