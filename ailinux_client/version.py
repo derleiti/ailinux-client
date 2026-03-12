@@ -1,16 +1,17 @@
 """AILinux Client Version"""
-VERSION = "4.3.3"
-BUILD_DATE = "20260101"
-API_VERSION = "4.3.3"
+VERSION = "4.8.0-beta"
+BUILD_DATE = "20260312"
+API_VERSION = "4.8.0-beta"
 CODENAME = "Brumo"
 
 CHANGELOG = """
-v4.3.0 "Brumo" (2025-12-31)
+v4.8.0-beta "Brumo" (2026-03-12)
 ===========================
-- FIX: mcp_node_client.py connect() Einrückung (war außerhalb Klasse)
-- FIX: model_sync.py async→sync + korrekter Endpoint
-- NEW: CLI Agents REST API (/v1/agents/cli)
-- NEW: Server Federation mit Auto-Healing
-- NEW: Contributor Mode (Hardware teilen)
-- NEW: Federation Status & Nodes Endpoints
+- NEW: AI-Dateianalyse aus File-Browser (Text/Binary-Risikoprofil)
+- NEW: Browser-Seitenanalyse inkl. Link-Kontext direkt im Chat
+- NEW: Compact-Prompt Dispatch zu Coding-Agents
+- NEW: Terminal AI Preflight (Typos vor Enter abfangen)
+- NEW: Runtime Safe-Mode und MCP-Disable Flags
+- FIX: MCP Node connect() stabilisiert und Legacy-Code entfernt
+- FIX: syslogger robust gegen nicht beschreibbare Logpfade
 """

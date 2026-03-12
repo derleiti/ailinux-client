@@ -20,8 +20,10 @@ from PyQt6.QtGui import QAction, QKeySequence, QIcon, QShortcut, QScreen
 import os
 import sys
 import json
+import mimetypes
 import logging
 import subprocess
+import hashlib
 from typing import Optional
 from pathlib import Path
 
@@ -190,7 +192,13 @@ class MainWindow(QMainWindow):
     - MCP Node connection
     """
 
-    def __init__(self, api_client: APIClient = None, desktop_mode: bool = False):
+    def __init__(
+        self,
+        api_client: APIClient = None,
+        desktop_mode: bool = False,
+        enable_local_mcp: bool = True,
+        enable_mcp_node: bool = True,
+    ):
         super().__init__()
 
         # Load application icon from main folder
@@ -198,6 +206,8 @@ class MainWindow(QMainWindow):
 
         self.api_client = api_client or APIClient()
         self.desktop_mode = desktop_mode
+        self.enable_local_mcp = enable_local_mcp
+        self.enable_mcp_node = enable_mcp_node
         self.mcp_node_thread: Optional[MCPNodeThread] = None
         self.local_mcp = LocalMCPExecutor()
         self.local_mcp_process: Optional[subprocess.Popen] = None
@@ -215,19 +225,26 @@ class MainWindow(QMainWindow):
         self._setup_shortcuts()
 
         # Start local MCP server
-        self._start_local_mcp_server()
+        if self.enable_local_mcp:
+            self._start_local_mcp_server()
+        else:
+            self.mcp_status_label.setText(tr("MCP: Local disabled"))
+            self.mcp_status_label.setStyleSheet("color: #888; padding: 0 8px;")
+            logger.info("Local MCP startup disabled by runtime flag")
 
         # Detect CLI agents
         self._detect_cli_agents()
 
         # Connect MCP Node if authenticated (registered users get limited MCP)
         # Use a timer to allow async operations to complete and retry if needed
-        if HAS_MCP_NODE:
+        if HAS_MCP_NODE and self.enable_mcp_node:
             if self.api_client.user_id or self.api_client.token:
                 self._connect_mcp_node()
             else:
                 # Retry connection after a delay (user might be authenticating)
                 QTimer.singleShot(2000, self._retry_mcp_connection)
+        elif HAS_MCP_NODE and not self.enable_mcp_node:
+            logger.info("Remote MCP node disabled by runtime flag")
 
         # Window settings
         self._load_window_settings()
@@ -410,6 +427,8 @@ class MainWindow(QMainWindow):
         # LEFT: File browser (full height, compact)
         self.file_browser = FileBrowser()
         self.file_browser.file_selected.connect(self._on_file_selected)
+        self.file_browser.open_terminal_requested.connect(self._on_open_terminal_requested)
+        self.file_browser.analyze_file_requested.connect(self._analyze_file_with_ai)
         self.file_browser.setMinimumWidth(150)
         self.main_splitter.addWidget(self.file_browser)
 
@@ -431,6 +450,8 @@ class MainWindow(QMainWindow):
             browser_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             browser_label.setStyleSheet("color: #888; font-size: 16px;")
             browser_layout.addWidget(browser_label)
+        if hasattr(self.browser_widget, "text_selected"):
+            self.browser_widget.text_selected.connect(self._on_browser_ai_selected)
         self.browser_widget.setMinimumHeight(100)
         self.center_splitter.addWidget(self.browser_widget)
 
@@ -709,6 +730,20 @@ class MainWindow(QMainWindow):
 
         tools_menu.addSeparator()
 
+        action_browser_summary = QAction(tr("Summarize Browser Page to Chat"), self)
+        action_browser_summary.triggered.connect(lambda: self.analyze_browser_page_in_chat(mode="summarize"))
+        tools_menu.addAction(action_browser_summary)
+
+        action_send_compact = QAction(tr("Send Compact Prompt to Agent"), self)
+        action_send_compact.triggered.connect(self._send_compact_prompt_to_agent)
+        tools_menu.addAction(action_send_compact)
+
+        action_send_cmd = QAction(tr("Send Last AI Command to Terminal"), self)
+        action_send_cmd.triggered.connect(self._send_last_ai_command_to_terminal)
+        tools_menu.addAction(action_send_cmd)
+
+        tools_menu.addSeparator()
+
         # CLI Agents submenu
         self.cli_agents_menu = tools_menu.addMenu(tr("CLI Agents"))
         # Will be populated in _detect_cli_agents()
@@ -874,6 +909,16 @@ class MainWindow(QMainWindow):
         self.mcp_status_label.setStyleSheet("color: #888; padding: 0 8px;")
         toolbar.addWidget(self.mcp_status_label)
 
+        self.btn_compact_agent = QPushButton("📤 Plan→Agent")
+        self.btn_compact_agent.setToolTip("Send compact prompt from current chat to coding agent")
+        self.btn_compact_agent.clicked.connect(self._send_compact_prompt_to_agent)
+        toolbar.addWidget(self.btn_compact_agent)
+
+        self.btn_ai_terminal = QPushButton("💻 AI→Terminal")
+        self.btn_ai_terminal.setToolTip("Send last AI shell command directly to terminal")
+        self.btn_ai_terminal.clicked.connect(self._send_last_ai_command_to_terminal)
+        toolbar.addWidget(self.btn_ai_terminal)
+
         # Spacer
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1008,6 +1053,12 @@ class MainWindow(QMainWindow):
                                           "Clear Chat", "Chat")
             self.shortcut_manager.register("Ctrl+K", self._chat_send_to_agent, ShortcutContext.CHAT,
                                           "Send to CLI Agent", "Chat")
+            self.shortcut_manager.register("Ctrl+Shift+E", self._send_compact_prompt_to_agent, ShortcutContext.GLOBAL,
+                                          "Send Compact Prompt to Agent", "Tools")
+            self.shortcut_manager.register("Ctrl+Shift+S", lambda: self.analyze_browser_page_in_chat(mode="summarize"), ShortcutContext.BROWSER,
+                                          "Summarize Browser Page to Chat", "Browser")
+            self.shortcut_manager.register("Ctrl+Shift+Return", self._send_last_ai_command_to_terminal, ShortcutContext.CHAT,
+                                          "Send Last AI Command to Terminal", "Chat")
 
             logger.info(f"Registered {len(self.shortcut_manager.get_all_shortcuts())} shortcuts (global + widget-specific)")
 
@@ -1164,6 +1215,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Alt+G"), self, lambda: self._launch_cli_agent("gemini"))
         QShortcut(QKeySequence("Alt+X"), self, lambda: self._launch_cli_agent("codex"))
         QShortcut(QKeySequence("Alt+O"), self, lambda: self._launch_cli_agent("opencode"))
+        QShortcut(QKeySequence("Ctrl+Shift+E"), self, self._send_compact_prompt_to_agent)
 
         # Tab navigation
         QShortcut(QKeySequence("Ctrl+Tab"), self, self._next_tab)
@@ -1765,7 +1817,7 @@ class MainWindow(QMainWindow):
                     if content:
                         # Send to agent via MCP
                         if hasattr(self.chat_widget, 'send_to_mcp_cli_agent'):
-                            self.chat_widget.send_to_mcp_cli_agent(agent.name, content)
+                            self.chat_widget.send_to_mcp_cli_agent(message=content, agent_id=agent.name)
                         else:
                             self.statusbar.showMessage(f"Sent to {agent_name}", 3000)
                     break
@@ -1776,7 +1828,7 @@ class MainWindow(QMainWindow):
 
     def _retry_mcp_connection(self):
         """Retry MCP Node connection if not yet connected"""
-        if not HAS_MCP_NODE:
+        if not HAS_MCP_NODE or not self.enable_mcp_node:
             return
 
         # Check if we now have authentication
@@ -1790,7 +1842,7 @@ class MainWindow(QMainWindow):
 
     def _connect_mcp_node(self):
         """Connect to MCP Node WebSocket"""
-        if not HAS_MCP_NODE:
+        if not HAS_MCP_NODE or not self.enable_mcp_node:
             return
 
         if self.mcp_node_thread and self.mcp_node_thread.isRunning():
@@ -1822,6 +1874,10 @@ class MainWindow(QMainWindow):
 
     def _reconnect_mcp_node(self):
         """Reconnect MCP Node"""
+        if not self.enable_mcp_node:
+            self.statusbar.showMessage("MCP Node is disabled (runtime flag)", 3000)
+            return
+
         if self.mcp_node_thread:
             self.mcp_node_thread.stop()
             self.mcp_node_thread.wait()
@@ -1832,12 +1888,15 @@ class MainWindow(QMainWindow):
     def _show_mcp_status(self):
         """Show MCP status dialog"""
         # Local MCP server status
-        local_status = "Running" if self.local_mcp_process else "Stopped"
+        local_status = "Disabled" if not self.enable_local_mcp else ("Running" if self.local_mcp_process else "Stopped")
         local_pid = self.local_mcp_process.pid if self.local_mcp_process else "N/A"
 
         # MCP Node status (optional remote connection)
         node_connected = self.mcp_node_thread and self.mcp_node_thread.running and self.mcp_node_thread.mcp_client
-        node_status = "Connected" if node_connected else "Not connected"
+        if not self.enable_mcp_node:
+            node_status = "Disabled"
+        else:
+            node_status = "Connected" if node_connected else "Not connected"
 
         # Get session info from MCP client if available
         session_id = "N/A"
@@ -2574,6 +2633,290 @@ CLI Agents: {len(self.cli_agents)}
         """Handle file selection in browser"""
         # Could open in editor tab
         self.statusbar.showMessage(f"Selected: {file_path}", 3000)
+
+    def _dispatch_prompt_to_chat(self, prompt: str, auto_send: bool = True):
+        """Send generated prompt to chat widget (in-process mode)."""
+        if not hasattr(self, "chat_widget"):
+            self.statusbar.showMessage("Chat widget not available", 3000)
+            return
+
+        if hasattr(self.chat_widget, "send_external_prompt"):
+            self.chat_widget.send_external_prompt(prompt, auto_send=auto_send)
+            return
+
+        self.statusbar.showMessage("Prompt dispatch requires in-process chat widget", 5000)
+
+    def _on_open_terminal_requested(self, command_or_path: str):
+        """Handle file browser terminal open requests."""
+        if not hasattr(self, "terminal_widget"):
+            return
+        if hasattr(self.terminal_widget, "send_to_current"):
+            cmd = command_or_path
+            if "&&" not in cmd and not cmd.strip().startswith("cd "):
+                cmd = f"cd '{cmd}'"
+            self.terminal_widget.send_to_current(cmd + "\n")
+
+    def _is_text_file_path(self, file_path: str) -> bool:
+        text_ext = {
+            ".txt", ".md", ".rst", ".log", ".json", ".yaml", ".yml", ".toml",
+            ".ini", ".cfg", ".conf", ".sh", ".bash", ".zsh", ".py", ".js", ".ts",
+            ".tsx", ".jsx", ".css", ".scss", ".html", ".xml", ".csv", ".sql",
+            ".env", ".dockerfile", ".gitignore",
+        }
+        suffix = Path(file_path).suffix.lower()
+        if suffix in text_ext:
+            return True
+        try:
+            with open(file_path, "rb") as f:
+                sample = f.read(4096)
+            if b"\x00" in sample:
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _build_text_file_analysis_prompt(self, file_path: str) -> str:
+        max_chars = 14000
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(max_chars)
+
+        if len(content) >= max_chars:
+            content += "\n\n[TRUNCATED]"
+
+        return (
+            "Analysiere die folgende Datei technisch und gib konkrete Empfehlungen:\n"
+            "1. Kurz-Zusammenfassung\n"
+            "2. Risiken/Bugs/Sicherheitsprobleme\n"
+            "3. Konkrete Verbesserungsvorschläge\n"
+            "4. Falls Code: optional kleiner Patch-Vorschlag\n\n"
+            f"Datei: {file_path}\n\n"
+            "Inhalt:\n"
+            "```text\n"
+            f"{content}\n"
+            "```"
+        )
+
+    def _build_binary_file_analysis_prompt(self, file_path: str) -> str:
+        p = Path(file_path)
+        st = p.stat()
+        mime, _ = mimetypes.guess_type(str(p))
+        with open(file_path, "rb") as f:
+            head = f.read(64)
+        sha256 = hashlib.sha256(head).hexdigest()
+
+        return (
+            "Die Datei ist vermutlich binär. Analysiere anhand der Metadaten, "
+            "ob es eher kritische/anwendungsrelevante Daten oder normale Distro-Datei sein könnte.\n"
+            "Gib eine Risiko-Einschätzung (niedrig/mittel/hoch) und kurze Begründung.\n"
+            "Wenn unsicher, gib an welche Online-Recherche sinnvoll wäre.\n\n"
+            f"Pfad: {file_path}\n"
+            f"Dateiname: {p.name}\n"
+            f"Suffix: {p.suffix or 'none'}\n"
+            f"MIME guess: {mime or 'unknown'}\n"
+            f"Größe (Bytes): {st.st_size}\n"
+            f"Zuletzt geändert (epoch): {int(st.st_mtime)}\n"
+            f"Berechtigungen (octal): {oct(st.st_mode & 0o777)}\n"
+            f"Header SHA256 (erste 64 bytes): {sha256}\n"
+            f"Header Hex: {head.hex()}\n"
+        )
+
+    def _analyze_file_with_ai(self, file_path: str):
+        """Analyze selected file with AI and push prompt into chat."""
+        try:
+            if not os.path.isfile(file_path):
+                self.statusbar.showMessage("Nur Dateien können analysiert werden", 3000)
+                return
+
+            if self._is_text_file_path(file_path):
+                prompt = self._build_text_file_analysis_prompt(file_path)
+            else:
+                prompt = self._build_binary_file_analysis_prompt(file_path)
+
+            self._dispatch_prompt_to_chat(prompt, auto_send=True)
+            self.statusbar.showMessage(f"AI-Analyse gestartet: {file_path}", 4000)
+        except Exception as e:
+            logger.error(f"File analysis failed: {e}")
+            self.statusbar.showMessage(f"Datei-Analyse Fehler: {e}", 5000)
+
+    def open_url_in_browser(self, url: str):
+        """Open URL in current browser tab."""
+        if not hasattr(self, "browser_widget"):
+            return
+        if hasattr(self.browser_widget, "navigate"):
+            self.browser_widget.navigate(url)
+            return
+        if hasattr(self.browser_widget, "navigate_to"):
+            self.browser_widget.navigate_to(url)
+            return
+        if hasattr(self.browser_widget, "current_tab"):
+            tab = self.browser_widget.current_tab()
+            if tab and hasattr(tab, "navigate"):
+                tab.navigate(url)
+
+    def _collect_browser_links(self, callback):
+        """Collect visible links from current browser page."""
+        try:
+            if not hasattr(self, "browser_widget") or not hasattr(self.browser_widget, "current_tab"):
+                callback([])
+                return
+            tab = self.browser_widget.current_tab()
+            if not tab or not hasattr(tab, "web_view"):
+                callback([])
+                return
+
+            js = """
+            (function() {
+                const links = Array.from(document.querySelectorAll('a[href]'))
+                  .map(a => ({title: (a.innerText || '').trim(), href: a.href}))
+                  .filter(x => x.href)
+                  .slice(0, 30);
+                return JSON.stringify(links);
+            })();
+            """
+            tab.web_view.page().runJavaScript(js, lambda raw: callback(json.loads(raw) if raw else []))
+        except Exception:
+            callback([])
+
+    def _on_browser_ai_selected(self, payload: str):
+        """Handle browser AI context menu events and forward to chat."""
+        try:
+            if not payload:
+                return
+
+            if payload.startswith("page_"):
+                kind, body = payload.split(":", 1)
+                action = kind.replace("page_", "", 1)
+                url, page_text = body.split("|", 1) if "|" in body else ("", body)
+
+                def _send_with_links(links):
+                    link_lines = "\n".join(
+                        f"- {item.get('title') or '(no title)'} -> {item.get('href')}"
+                        for item in links[:20]
+                    ) if links else "(keine Links gefunden)"
+                    prompt = (
+                        f"Analysiere diese Webseite ({action}) und antworte strukturiert.\n"
+                        f"URL: {url}\n\n"
+                        "Erkannte Links:\n"
+                        f"{link_lines}\n\n"
+                        "Seiteninhalt (gekürzt):\n"
+                        "```text\n"
+                        f"{page_text[:12000]}\n"
+                        "```"
+                    )
+                    self._dispatch_prompt_to_chat(prompt, auto_send=True)
+
+                self._collect_browser_links(_send_with_links)
+                return
+
+            action, text = payload.split(":", 1) if ":" in payload else ("summarize", payload)
+            prompt = (
+                f"Browser Text-Aktion: {action}\n"
+                "Bitte antworte präzise und kontextbezogen.\n\n"
+                "Text:\n"
+                "```text\n"
+                f"{text[:8000]}\n"
+                "```"
+            )
+            self._dispatch_prompt_to_chat(prompt, auto_send=True)
+        except Exception as e:
+            logger.error(f"Browser AI payload handling failed: {e}")
+
+    def analyze_browser_page_in_chat(self, mode: str = "summarize"):
+        """Analyze current browser page (text + links) and send to chat."""
+        if not hasattr(self, "browser_widget") or not hasattr(self.browser_widget, "current_tab"):
+            self.statusbar.showMessage("Browser nicht verfügbar", 3000)
+            return
+        tab = self.browser_widget.current_tab()
+        if not tab or not hasattr(tab, "web_view"):
+            self.statusbar.showMessage("Kein aktiver Browser-Tab", 3000)
+            return
+
+        js = """
+        (function() {
+            const body = document.body ? document.body.innerText || '' : '';
+            const title = document.title || '';
+            const url = window.location.href || '';
+            const links = Array.from(document.querySelectorAll('a[href]'))
+              .map(a => ({title: (a.innerText || '').trim(), href: a.href}))
+              .filter(x => x.href)
+              .slice(0, 30);
+            return JSON.stringify({title, url, text: body.slice(0, 14000), links});
+        })();
+        """
+
+        def _on_page(raw):
+            if not raw:
+                self.statusbar.showMessage("Seitenanalyse fehlgeschlagen", 4000)
+                return
+            try:
+                data = json.loads(raw)
+            except Exception:
+                self.statusbar.showMessage("Seitenanalyse-Daten ungültig", 4000)
+                return
+
+            links = data.get("links") or []
+            links_text = "\n".join(
+                f"- {item.get('title') or '(no title)'} -> {item.get('href')}"
+                for item in links[:20]
+            ) if links else "(keine Links gefunden)"
+            prompt = (
+                f"Webseitenanalyse Modus: {mode}\n"
+                f"Titel: {data.get('title','')}\n"
+                f"URL: {data.get('url','')}\n\n"
+                "Vorhandene Links:\n"
+                f"{links_text}\n\n"
+                "Seiteninhalt:\n"
+                "```text\n"
+                f"{(data.get('text') or '')[:12000]}\n"
+                "```\n\n"
+                "Erstelle eine harmonische Zusammenfassung und schlage 3 sinnvolle Folgefragen vor."
+            )
+            self._dispatch_prompt_to_chat(prompt, auto_send=True)
+
+        tab.web_view.page().runJavaScript(js, _on_page)
+
+    def _send_compact_prompt_to_agent(self):
+        """Send compact prompt from chat history to a preferred coding agent."""
+        if not hasattr(self, "chat_widget") or not hasattr(self.chat_widget, "send_compact_prompt_to_agent"):
+            self.statusbar.showMessage("Compact prompt dispatch not available", 4000)
+            return
+
+        preferred = "codex-mcp"
+        available = {a.name for a in self.cli_agents} if self.cli_agents else set()
+        if "codex" not in available and "claude" in available:
+            preferred = "claude-mcp"
+        elif "codex" not in available and "gemini" in available:
+            preferred = "gemini-mcp"
+
+        ok = self.chat_widget.send_compact_prompt_to_agent(preferred)
+        self.statusbar.showMessage(
+            f"Compact prompt {'gesendet' if ok else 'fehlgeschlagen'} ({preferred})",
+            5000
+        )
+
+    def send_command_to_terminal(self, command: str, execute: bool = True) -> bool:
+        """Send command text to terminal widget, optionally execute immediately."""
+        if not hasattr(self, "terminal_widget"):
+            return False
+        if not hasattr(self.terminal_widget, "send_to_current"):
+            return False
+
+        payload = command if not execute else command + "\n"
+        try:
+            self.terminal_widget.send_to_current(payload)
+            self.statusbar.showMessage(f"Terminal command sent: {command[:120]}", 4000)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send command to terminal: {e}")
+            self.statusbar.showMessage(f"Terminal send failed: {e}", 4000)
+            return False
+
+    def _send_last_ai_command_to_terminal(self):
+        """Send last AI shell command from chat to terminal and execute it."""
+        if not hasattr(self, "chat_widget") or not hasattr(self.chat_widget, "send_last_command_to_terminal"):
+            self.statusbar.showMessage("Chat command bridge not available", 4000)
+            return
+        self.chat_widget.send_last_command_to_terminal(execute=True)
 
     # =========================================================================
     # Settings & Dialogs

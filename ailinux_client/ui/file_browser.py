@@ -150,6 +150,7 @@ class FileBrowser(QWidget, KeyCaptureMixin):
     file_selected = pyqtSignal(str)  # Full path
     directory_changed = pyqtSignal(str)
     open_terminal_requested = pyqtSignal(str)  # Request to open terminal at path
+    analyze_file_requested = pyqtSignal(str)  # Request AI analysis for file
 
     # Class-level clipboard (shared across all instances)
     _clipboard_path: str = None
@@ -227,6 +228,14 @@ class FileBrowser(QWidget, KeyCaptureMixin):
             self.bind_key(Qt.Key.Key_R, self._refresh, "Refresh",
                          Qt.KeyboardModifier.ControlModifier)
 
+            # Ctrl+Shift+A: Analyze selected file with AI
+            self.bind_key(
+                Qt.Key.Key_A,
+                self._analyze_selected,
+                "Analyze with AI",
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+            )
+
             # Alt+Home: Go home
             self.bind_key(Qt.Key.Key_Home, self._go_home, "Go Home",
                          Qt.KeyboardModifier.AltModifier)
@@ -283,6 +292,12 @@ class FileBrowser(QWidget, KeyCaptureMixin):
         if indexes:
             index = indexes[0]
             self._on_double_click(index)
+
+    def _analyze_selected(self):
+        """Analyze selected file with AI via main window."""
+        path = self._get_selected_path()
+        if path and os.path.isfile(path):
+            self.analyze_file_requested.emit(path)
 
     def _select_all(self):
         """Select all items in current directory"""
@@ -803,6 +818,9 @@ class FileBrowser(QWidget, KeyCaptureMixin):
             open_with_menu.addSeparator()
             open_with_menu.addAction("Choose Application...", lambda: self._choose_application(path))
 
+            menu.addSeparator()
+            analyze_action = menu.addAction("🧠 Analyze with AI", lambda: self.analyze_file_requested.emit(path))
+            analyze_action.setShortcut("Ctrl+Shift+A")
             menu.addSeparator()
 
         # Cut/Copy/Paste section

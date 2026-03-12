@@ -1202,6 +1202,10 @@ class SettingsDialog(QDialog):
         self.term_cursor_blink.setChecked(True)
         misc_layout.addRow("", self.term_cursor_blink)
 
+        self.term_ai_preflight = QCheckBox(tr("AI preflight: suggest command typo fixes on Enter"))
+        self.term_ai_preflight.setChecked(True)
+        misc_layout.addRow("", self.term_ai_preflight)
+
         layout.addWidget(misc_group)
         layout.addStretch()
 
@@ -1411,6 +1415,7 @@ class SettingsDialog(QDialog):
         self.term_scroll_on_input.setChecked(self.settings.value("term_scroll_on_input", True, type=bool))
         self.term_bell_enabled.setChecked(self.settings.value("term_bell_enabled", False, type=bool))
         self.term_cursor_blink.setChecked(self.settings.value("term_cursor_blink", True, type=bool))
+        self.term_ai_preflight.setChecked(self.settings.value("terminal_ai_preflight", True, type=bool))
 
         # Chat
         self.chat_default_model.setCurrentText(self.settings.value("chat_default_model", "auto"))
@@ -1501,6 +1506,7 @@ class SettingsDialog(QDialog):
         self.settings.setValue("term_scroll_on_input", self.term_scroll_on_input.isChecked())
         self.settings.setValue("term_bell_enabled", self.term_bell_enabled.isChecked())
         self.settings.setValue("term_cursor_blink", self.term_cursor_blink.isChecked())
+        self.settings.setValue("terminal_ai_preflight", self.term_ai_preflight.isChecked())
 
         # Chat
         self.settings.setValue("chat_default_model", self.chat_default_model.currentText())

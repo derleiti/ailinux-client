@@ -272,6 +272,14 @@ class APIClient:
         """Check if authenticated"""
         return bool(self.token)
 
+    def get(self, endpoint: str, timeout: float = 60.0) -> Dict[str, Any]:
+        """Public GET helper for modules that expect get/post wrappers."""
+        return self._request("GET", endpoint, None, timeout=timeout)
+
+    def post(self, endpoint: str, json: Dict[str, Any] = None, timeout: float = 60.0) -> Dict[str, Any]:
+        """Public POST helper for modules that expect get/post wrappers."""
+        return self._request("POST", endpoint, json or {}, timeout=timeout)
+
     # =========================================================================
     # Chat
     # =========================================================================

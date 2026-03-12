@@ -594,8 +594,8 @@ class EncryptedSettings:
             if not sync_data:
                 return False
 
-            # Use API client to push data
-            response = await api_client.post(
+            # APIClient exposes synchronous wrappers; do not await them.
+            response = api_client.post(
                 "/v1/user/settings/sync",
                 json=sync_data
             )
@@ -629,8 +629,8 @@ class EncryptedSettings:
             return False
 
         try:
-            # Use API client to pull data
-            response = await api_client.get("/v1/user/settings/sync")
+            # APIClient exposes synchronous wrappers; do not await them.
+            response = api_client.get("/v1/user/settings/sync")
 
             if response and response.get("encrypted_data"):
                 return self.import_sync_data(response)

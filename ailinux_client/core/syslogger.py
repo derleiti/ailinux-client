@@ -16,6 +16,7 @@ import logging.handlers
 import json
 import socket
 import sys
+import os
 import traceback
 import platform
 from pathlib import Path
@@ -26,6 +27,7 @@ from enum import Enum
 import threading
 import queue
 import atexit
+import tempfile
 
 
 class LogLevel(Enum):
@@ -245,24 +247,27 @@ class DevOpsSyslogger:
         
         # Verhindere doppelte Handler
         self._logger.handlers.clear()
-        
-        # Log-Verzeichnis
-        self._log_dir = Path.home() / ".ailinux" / "logs"
-        self._log_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Log-Verzeichnis (mit Fallback wenn Home-Pfad nicht beschreibbar ist)
+        self._log_dir = self._resolve_log_dir()
+
         # 1. Rotating File Handler (lokal)
-        self._file_handler = logging.handlers.RotatingFileHandler(
-            self._log_dir / "client.log",
-            maxBytes=5 * 1024 * 1024,  # 5 MB
-            backupCount=5,
-            encoding="utf-8"
-        )
-        self._file_handler.setLevel(logging.DEBUG)
-        self._file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s|%(levelname)-8s|%(name)-25s|%(filename)s:%(lineno)d|%(message)s"
-        ))
-        self._logger.addHandler(self._file_handler)
-        
+        self._file_handler = None
+        try:
+            self._file_handler = logging.handlers.RotatingFileHandler(
+                self._log_dir / "client.log",
+                maxBytes=5 * 1024 * 1024,  # 5 MB
+                backupCount=5,
+                encoding="utf-8"
+            )
+            self._file_handler.setLevel(logging.DEBUG)
+            self._file_handler.setFormatter(logging.Formatter(
+                "%(asctime)s|%(levelname)-8s|%(name)-25s|%(filename)s:%(lineno)d|%(message)s"
+            ))
+            self._logger.addHandler(self._file_handler)
+        except Exception as e:
+            sys.stderr.write(f"Syslogger warning: file logging disabled: {e}\n")
+
         # 2. Console Handler (stderr)
         self._console_handler = logging.StreamHandler(sys.stderr)
         self._console_handler.setLevel(logging.INFO)
@@ -276,20 +281,47 @@ class DevOpsSyslogger:
         self._remote_handler.setLevel(logging.WARNING)  # Nur WARNING+ remote
         self._remote_handler.setFormatter(logging.Formatter("%(message)s"))
         self._logger.addHandler(self._remote_handler)
-        
+
         # 4. JSON Log File (für structured logging)
-        self._json_handler = logging.handlers.RotatingFileHandler(
-            self._log_dir / "client.json.log",
-            maxBytes=10 * 1024 * 1024,  # 10 MB
-            backupCount=3,
-            encoding="utf-8"
-        )
-        self._json_handler.setLevel(logging.DEBUG)
-        self._json_handler.setFormatter(JsonFormatter())
-        self._logger.addHandler(self._json_handler)
-        
+        self._json_handler = None
+        try:
+            self._json_handler = logging.handlers.RotatingFileHandler(
+                self._log_dir / "client.json.log",
+                maxBytes=10 * 1024 * 1024,  # 10 MB
+                backupCount=3,
+                encoding="utf-8"
+            )
+            self._json_handler.setLevel(logging.DEBUG)
+            self._json_handler.setFormatter(JsonFormatter())
+            self._logger.addHandler(self._json_handler)
+        except Exception as e:
+            sys.stderr.write(f"Syslogger warning: json logging disabled: {e}\n")
+
         # Crash Handler
         sys.excepthook = self._crash_handler
+
+    def _resolve_log_dir(self) -> Path:
+        """
+        Resolve a writable log directory.
+        Tries user home first, then cache, then /tmp.
+        """
+        candidates = [
+            Path.home() / ".ailinux" / "logs",
+            Path.home() / ".cache" / "ailinux" / "logs",
+            Path(tempfile.gettempdir()) / f"ailinux-{os.getuid()}" / "logs",
+        ]
+
+        for path in candidates:
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                test_file = path / ".write_test"
+                test_file.write_text("ok", encoding="utf-8")
+                test_file.unlink(missing_ok=True)
+                return path
+            except Exception:
+                continue
+
+        return Path(".")
     
     def set_auth(self, token: str, user_id: str = None, tier: str = None):
         """Setzt Auth für Remote-Logging"""
@@ -330,7 +362,10 @@ class DevOpsSyslogger:
         
         # Crash-Report speichern
         crash_file = self._log_dir / f"crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-        crash_file.write_text(tb_str, encoding="utf-8")
+        try:
+            crash_file.write_text(tb_str, encoding="utf-8")
+        except Exception:
+            sys.stderr.write(tb_str)
         
         # Original excepthook aufrufen
         sys.__excepthook__(exc_type, exc_value, exc_tb)

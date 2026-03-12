@@ -23,6 +23,8 @@ import termios
 import select
 import signal
 import shutil
+import shlex
+import difflib
 import logging
 from pathlib import Path
 from typing import Optional
@@ -791,6 +793,13 @@ class PyteTerminal(QWidget, KeyCaptureMixin):
         # Accept Tab key focus (don't let it navigate away)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
+        # AI/heuristic command preflight state
+        self._command_buffer = ""
+        self._known_commands = self._load_known_commands()
+        self._preflight_enabled = QSettings("AILinux", "Client").value(
+            "terminal_ai_preflight", True, type=bool
+        )
+
     def _setup_key_bindings(self):
         """
         Setup terminal key handling.
@@ -801,6 +810,94 @@ class PyteTerminal(QWidget, KeyCaptureMixin):
         # We don't use KeyCaptureMixin for terminal - we pass keys directly to PTY
         # Terminal UI shortcuts are handled in keyPressEvent before sending to PTY
         pass
+
+    def _load_known_commands(self) -> set:
+        """Build a set of executable command names available in PATH."""
+        commands = set()
+        for path in os.environ.get("PATH", "").split(os.pathsep):
+            if not path:
+                continue
+            try:
+                p = Path(path)
+                if not p.is_dir():
+                    continue
+                for entry in p.iterdir():
+                    if entry.is_file() and os.access(entry, os.X_OK):
+                        commands.add(entry.name)
+            except Exception:
+                continue
+        return commands
+
+    def _suggest_command_correction(self, line: str) -> Optional[tuple]:
+        """
+        Suggest command correction for obvious typos.
+        Returns (corrected_command, suggestion) or None.
+        """
+        stripped = (line or "").strip()
+        if not stripped:
+            return None
+
+        try:
+            parts = shlex.split(stripped)
+        except Exception:
+            return None
+
+        if not parts:
+            return None
+
+        cmd = parts[0]
+        # Skip shell builtins/operators and explicit paths
+        if cmd in {"cd", "exit", "export", "set", "alias", "unalias", "source", ".", "sudo"}:
+            return None
+        if "/" in cmd or shutil.which(cmd):
+            return None
+
+        matches = difflib.get_close_matches(cmd, list(self._known_commands), n=3, cutoff=0.72)
+        if not matches:
+            return None
+
+        suggestion = matches[0]
+        corrected_parts = [suggestion] + parts[1:]
+        corrected = " ".join(shlex.quote(p) for p in corrected_parts)
+        return corrected, suggestion
+
+    def _handle_enter_key(self):
+        """Handle Enter with optional preflight typo correction."""
+        line = self._command_buffer
+        self._command_buffer = ""
+
+        if not self._preflight_enabled:
+            self._write("\r")
+            return
+
+        suggestion = self._suggest_command_correction(line)
+        if not suggestion:
+            self._write("\r")
+            return
+
+        corrected, candidate = suggestion
+        from PyQt6.QtWidgets import QMessageBox
+
+        answer = QMessageBox.question(
+            self,
+            "Command correction",
+            (
+                f"Unbekanntes Kommando erkannt.\n\n"
+                f"Vorschlag: {candidate}\n\n"
+                f"Korrigierten Befehl ausführen?\n{corrected}"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+
+        if answer == QMessageBox.StandardButton.Yes:
+            # Ctrl+U clears current shell line in most interactive shells.
+            self._write_bytes(b"\x15")
+            self._write(corrected)
+        else:
+            # Keep user-entered line unchanged.
+            self._write(line)
+        self._write("\r")
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -1059,9 +1156,11 @@ class PyteTerminal(QWidget, KeyCaptureMixin):
             self._write_bytes(b'\x1b[Z')
             return
         if key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
-            self._write('\r')
+            self._handle_enter_key()
             return
         if key == Qt.Key.Key_Backspace:
+            if self._command_buffer:
+                self._command_buffer = self._command_buffer[:-1]
             self._write_bytes(b'\x7f')
             return
         if key == Qt.Key.Key_Escape:
@@ -1127,6 +1226,8 @@ class PyteTerminal(QWidget, KeyCaptureMixin):
         if ctrl and not shift and not alt:
             # Convert to control character (Ctrl+A=\x01, Ctrl+C=\x03, etc.)
             if Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+                if key == Qt.Key.Key_C or key == Qt.Key.Key_U:
+                    self._command_buffer = ""
                 ctrl_char = key - Qt.Key.Key_A + 1
                 self._write_bytes(bytes([ctrl_char]))
                 return
@@ -1147,6 +1248,8 @@ class PyteTerminal(QWidget, KeyCaptureMixin):
                 # Alt+key sends ESC followed by the key
                 self._write_bytes(b'\x1b' + text.encode('utf-8'))
             else:
+                if not ctrl and not alt:
+                    self._command_buffer += text
                 self._write(text)
 
     def _on_finished(self):

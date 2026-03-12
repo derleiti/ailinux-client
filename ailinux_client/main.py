@@ -175,6 +175,12 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--safe-mode",
+        action="store_true",
+        help="Stability mode: software render + disable local/remote MCP startup"
+    )
+
+    parser.add_argument(
         "--hwinfo",
         action="store_true",
         help="Show hardware information and exit"
@@ -184,6 +190,24 @@ def parse_args():
         "--software-render",
         action="store_true",
         help="Force software rendering (disable GPU)"
+    )
+
+    parser.add_argument(
+        "--no-local-mcp",
+        action="store_true",
+        help="Disable local MCP stdio server startup"
+    )
+
+    parser.add_argument(
+        "--no-mcp-node",
+        action="store_true",
+        help="Disable remote MCP node websocket connection"
+    )
+
+    parser.add_argument(
+        "--server",
+        default="",
+        help="Override API server base URL (default: https://api.ailinux.me)"
     )
 
     parser.add_argument(
@@ -234,6 +258,16 @@ def is_autostart_enabled() -> bool:
 def main():
     """Main entry point"""
     args = parse_args()
+    env_true = {"1", "true", "yes", "on"}
+
+    if os.getenv("AILINUX_SAFE_MODE", "").strip().lower() in env_true:
+        args.safe_mode = True
+    if os.getenv("AILINUX_NO_LOCAL_MCP", "").strip().lower() in env_true:
+        args.no_local_mcp = True
+    if os.getenv("AILINUX_NO_MCP_NODE", "").strip().lower() in env_true:
+        args.no_mcp_node = True
+    if not args.server and os.getenv("API_BASE_URL"):
+        args.server = os.getenv("API_BASE_URL")
 
     # Handle --hwinfo command (no GUI needed)
     if args.hwinfo:
@@ -263,6 +297,13 @@ def main():
             return 1
 
     # Force software rendering if requested
+    if args.safe_mode:
+        args.software_render = True
+        args.no_local_mcp = True
+        args.no_mcp_node = True
+        os.environ["AILINUX_SAFE_MODE"] = "1"
+        logger.info("Safe mode enabled")
+
     if args.software_render:
         os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'
         os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = '--disable-gpu'
@@ -327,6 +368,9 @@ def main():
     # Initialize API client
     from ailinux_client.core.api_client import APIClient
     api_client = APIClient()
+    if args.server:
+        api_client.base_url = args.server.rstrip("/")
+        logger.info(f"Using custom server: {api_client.base_url}")
 
     # Show login dialog if not authenticated
     if not api_client.is_authenticated():
@@ -341,7 +385,9 @@ def main():
 
     window = MainWindow(
         api_client=api_client,
-        desktop_mode=args.desktop
+        desktop_mode=args.desktop,
+        enable_local_mcp=not args.no_local_mcp,
+        enable_mcp_node=not args.no_mcp_node
 
     )
 

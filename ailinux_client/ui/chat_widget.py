@@ -453,6 +453,11 @@ class PromptInput(QPlainTextEdit):
         self.clear()
         self.setFixedHeight(self.MIN_HEIGHT)
 
+    def set_text(self, text: str):
+        """Set input text and recalculate height."""
+        self.setPlainText(text or "")
+        self._auto_resize()
+
 
 class ChatWorker(QThread):
     """Background worker for chat requests with Planning Mode support and timing"""
@@ -1002,6 +1007,90 @@ class ChatWidget(QWidget):
             logger.error(f"Failed to send to CLI agent: {e}")
             self._add_message("error", f"CLI Agent nicht erreichbar: {e}")
 
+    def set_input_text(self, text: str, append: bool = False):
+        """Set or append text in chat input field."""
+        if append:
+            current = self.input_field.toPlainText()
+            if current.strip():
+                self.input_field.set_text(current.rstrip() + "\n" + text)
+            else:
+                self.input_field.set_text(text)
+        else:
+            self.input_field.set_text(text)
+        self.input_field.setFocus()
+
+    def send_external_prompt(self, prompt: str, auto_send: bool = True):
+        """Inject prompt from another widget (browser/files) and optionally send it."""
+        self.set_input_text(prompt, append=False)
+        if auto_send:
+            self._send_message()
+
+    def _handle_browser_command(self, message: str) -> bool:
+        """
+        Handle /browser commands from chat input.
+        Supported:
+          /browser open <url>
+          /browser back|forward|reload
+          /browser summarize
+          /browser links
+        """
+        stripped = (message or "").strip()
+        if not stripped.startswith("/browser"):
+            return False
+
+        main_window = self.window()
+        if not main_window:
+            self._add_message("error", "Browser-Steuerung nicht verfügbar")
+            return True
+
+        parts = stripped.split(maxsplit=2)
+        if len(parts) < 2:
+            self._add_message("error", "Usage: /browser <open|back|forward|reload|summarize|links> [arg]")
+            return True
+
+        action = parts[1].lower()
+        arg = parts[2].strip() if len(parts) > 2 else ""
+
+        try:
+            if action == "open":
+                if not arg:
+                    self._add_message("error", "Usage: /browser open <url>")
+                    return True
+                if hasattr(main_window, "open_url_in_browser"):
+                    main_window.open_url_in_browser(arg)
+                    self._add_message("assistant", f"Browser geöffnet: {arg}")
+                else:
+                    self._add_message("error", "Browser API nicht verfügbar")
+                return True
+
+            if action == "back":
+                if hasattr(main_window, "_browser_back"):
+                    main_window._browser_back()
+                return True
+            if action == "forward":
+                if hasattr(main_window, "_browser_forward"):
+                    main_window._browser_forward()
+                return True
+            if action == "reload":
+                if hasattr(main_window, "_browser_reload"):
+                    main_window._browser_reload()
+                return True
+            if action in {"summarize", "summary"}:
+                if hasattr(main_window, "analyze_browser_page_in_chat"):
+                    main_window.analyze_browser_page_in_chat(mode="summarize")
+                return True
+            if action == "links":
+                if hasattr(main_window, "analyze_browser_page_in_chat"):
+                    main_window.analyze_browser_page_in_chat(mode="links")
+                return True
+
+            self._add_message("error", f"Unbekannter browser command: {action}")
+            return True
+        except Exception as e:
+            logger.error(f"Browser command failed: {e}")
+            self._add_message("error", f"Browser command error: {e}")
+            return True
+
     def _send_message(self):
         """Send message"""
         message = self.input_field.get_text()
@@ -1028,6 +1117,10 @@ class ChatWidget(QWidget):
             if self._handle_mcp_command(message):
                 self.input_field.clear_text()
                 return
+
+        if self._handle_browser_command(message):
+            self.input_field.clear_text()
+            return
 
         # Get selected model from new selector
         model_data = self.model_selector.get_current_model_data()
@@ -1180,6 +1273,112 @@ class ChatWidget(QWidget):
             except Exception as e:
                 logger.error(f"Failed to send to CLI agent: {e}")
                 self._add_message("error", f"Fehler: {e}")
+
+    def extract_last_shell_command(self) -> Optional[str]:
+        """Extract first shell command candidate from last AI response."""
+        if not hasattr(self, "_last_ai_response") or not self._last_ai_response:
+            return None
+
+        text = self._last_ai_response
+        try:
+            renderer = get_renderer()
+            blocks = renderer.extract_code_blocks(text)
+            for block in blocks:
+                lang = (block.get("language") or "").lower()
+                if lang in {"bash", "sh", "shell", "zsh", "console", ""}:
+                    raw = (block.get("code") or "").strip()
+                    if not raw:
+                        continue
+                    # Use first non-empty line
+                    for line in raw.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith("$ "):
+                            return line[2:].strip()
+                        return line
+        except Exception:
+            pass
+
+        # Fallback: try first line prefixed with '$ '
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("$ "):
+                return line[2:].strip()
+        return None
+
+    def send_last_command_to_terminal(self, execute: bool = True) -> bool:
+        """Send extracted shell command from last response to terminal widget."""
+        cmd = self.extract_last_shell_command()
+        if not cmd:
+            self._add_message("error", "Kein Shell-Kommando in letzter AI-Antwort gefunden")
+            return False
+
+        main_window = self.window()
+        if not main_window or not hasattr(main_window, "send_command_to_terminal"):
+            self._add_message("error", "Terminal-Bridge nicht verfügbar")
+            return False
+
+        ok = main_window.send_command_to_terminal(cmd, execute=execute)
+        if ok:
+            self._add_message("assistant", f"Shell-Kommando an Terminal gesendet: `{cmd}`")
+        else:
+            self._add_message("error", "Terminal konnte Kommando nicht empfangen")
+        return ok
+
+    def build_compact_prompt(self, max_messages: int = 12, max_chars: int = 5000) -> str:
+        """Build a compact actionable prompt from recent chat history."""
+        if not self.messages:
+            return ""
+
+        recent = self.messages[-max_messages:]
+        lines = []
+        for msg in recent:
+            role = msg.get("role", "user")
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            prefix = "USER" if role == "user" else ("ASSISTANT" if role == "assistant" else "SYSTEM")
+            lines.append(f"[{prefix}] {content}")
+
+        compact = "\\n".join(lines).strip()
+        if len(compact) > max_chars:
+            compact = compact[-max_chars:]
+        return (
+            "Bitte löse die folgende Aufgabe als Coding-Agent. "
+            "Fokussiere auf konkrete, ausführbare Schritte und liefere stabile Änderungen.\\n\\n"
+            f"{compact}"
+        )
+
+    def send_compact_prompt_to_agent(self, agent_id: str = "codex-mcp") -> bool:
+        """Send compact prompt from current conversation to a CLI agent endpoint."""
+        if not self.api_client:
+            self._add_message("error", "Nicht authentifiziert")
+            return False
+
+        compact_prompt = self.build_compact_prompt()
+        if not compact_prompt:
+            self._add_message("error", "Kein Gesprächsinhalt für kompakten Prompt")
+            return False
+
+        try:
+            result = self.api_client._request("POST", f"/v1/cli-agents/{agent_id}/call", {
+                "message": compact_prompt,
+                "context": {
+                    "source": "compact_prompt_dispatch",
+                    "compact": True
+                }
+            })
+            if result and result.get("success"):
+                response = result.get("response", "")
+                self._add_message("assistant", f"**{agent_id} (compact prompt):**\\n{response}")
+                return True
+            self._add_message("error", f"Kompakt-Prompt fehlgeschlagen: {result}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send compact prompt: {e}")
+            self._add_message("error", f"Kompakt-Prompt Fehler: {e}")
+            return False
 
 
     def focus_input(self):
