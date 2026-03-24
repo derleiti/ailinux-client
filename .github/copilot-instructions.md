@@ -1,49 +1,38 @@
-# Copilot instructions for AILinux Client
+# Copilot Instructions — AILinux / TriForce
 
-This project is a PyQt6-based desktop client with a hardware-optimized bootstrap, an HTTP API client, and an MCP (agent) stdio proxy. Keep guidance focused, actionable, and repository-specific.
+## Project Context
+This is part of the AILinux ecosystem by Markus Leitermann (@derleiti, Warzenried, Oberpfalz).
+Backend: TriForce — FastAPI multi-LLM orchestration, 659+ models, MCP tools, WireGuard federation mesh.
 
-High-level architecture
-- The bootstrap is `run.py`: does hardware detection, sets env vars, then calls `ailinux_client.main.main()`.
-- The GUI entry is `ailinux_client/main.py`: MUST set Qt-related environment and `QSurfaceFormat` BEFORE importing Qt widgets or WebEngine.
-- Core services live under `ailinux_client/core/` (API client, MCP stdio server, hardware detection, tier manager, etc.).
-- UI lives under `ailinux_client/ui/` and uses PyQt6 Widgets (not QML).
+## Stack
+- Python 3.12, FastAPI, uvicorn, httpx
+- Redis, Docker, Apache reverse proxy
+- PyQt6 (desktop clients)
+- MCP (Model Context Protocol) — JSON-RPC 2.0
 
-What to watch for (rules for edits)
-- Always set Qt env variables and call `_setup_surface_format()` before any `PyQt6` widget import. See `ailinux_client/main.py` for exact locations and examples.
-- The app tries `httpx` first, falls back to `requests` if `httpx` is unavailable. Use the same pattern when adding new HTTP code (see `ailinux_client/core/api_client.py`).
-- Credentials and session files are stored under `~/.config/ailinux/` (e.g. `credentials.json`, `session_id`). Code often assumes secure file perms (0o600).
-- Environment variables commonly used: `AILINUX_SERVER`, `AILINUX_TOKEN`, `AILINUX_TIER`, `AILINUX_CLIENT_CERT`, `AILINUX_CA_CERT`, `AILINUX_WSS_PORT`. Use these for local testing and daemons.
-- Graceful shutdown hooks: `run.py` exposes `register_cleanup()` and `set_main_window()` — use these to ensure background threads/servers stop cleanly.
+## Coding Style
+- Efficiency beats enthusiasm.
+- No padding, no unnecessary abstraction.
+- Ursache vor Fix — understand before implementing.
+- Short, robust changes. No blind overwrites.
+- Always syntax-check Python before suggesting: `python3 -c "import ast; ast.parse(...)"`
+- Prefer subprocess over MCP for local execution.
+- German variable names are acceptable, English for APIs.
 
-MCP / Agent specifics
-- `ailinux_client/core/mcp_stdio_server.py` implements a JSON-RPC-over-stdio MCP proxy used by CLI agents. It:
-  - Filters remote tools by `tier` (see `TIER_TOOLS`).
-  - Exposes local-only tools prefixed with `local_` (e.g. `local_file_read`).
-  - Maintains read-only telemetry via a WebSocket; remote tool execution from the server is explicitly blocked.
-- When editing MCP behavior, preserve the tier-filter logic and never enable remote code execution in telemetry loops.
+## Architecture Rules
+- MCP tools are READ-ONLY for aicoder users. No shell/binary_exec/code_edit on server.
+- Execution (shell, service management) runs LOCALLY via subprocess.
+- JWT tokens contain: client_id, sub (email), role, account_role, tier.
+- Backend base URL for local/WireGuard: http://10.10.0.1:9000
+- Backend base URL for external: https://api.ailinux.me
 
-Developer workflows & common commands
-- Install dependencies: `pip install -r requirements.txt` (virtualenv recommended).
-- Launch the app (dev):
-  - `./run-ailinux.sh` or `python3 run.py` (bootstrap + GUI)
-  - `python -m ailinux_client` (module entry)
-- Non-GUI helpers:
-  - Show hardware info: `python3 run.py --hwinfo`
-  - Run benchmark: `python3 run.py --benchmark`
-  - MCP daemon (telemetry): `python3 run_mcp_daemon.py`
+## Key Paths (Hetzner server)
+- Backend: /home/zombie/triforce/
+- Config: /home/zombie/triforce/config/triforce.env
+- Users: /config/users.json
+- WP: /home/zombie/triforce/docker/wordpress/html/
 
-Patterns & examples to reference
-- Hardware/Qt ordering: `run.py` -> `_early_optimizations()` -> `_setup_qt_environment()` -> `ailinux_client.main._setup_surface_format()`
-- API client usage: instantiate `APIClient()` from `ailinux_client/core/api_client.py` and call `.is_authenticated()`, `.login()`, `.get_models()`.
-- Telemetry & mTLS: `run_mcp_daemon.py` shows environment variables and how mTLS certs are expected (see `mcp_stdio_server`'s `_bootstrap_telemetry`).
-
-Testing and CI notes
-- There is a Windows build workflow under `.github/workflows/`. Local CI and packaging may require platform-specific Qt packages.
-- When adding integration tests that import Qt, ensure test harness sets the same QSurfaceFormat and Qt env variables before importing PyQt6.
-
-Editing checklist for PRs
-- If touching startup/Qt code: verify no PyQt imports occur before environment setup.
-- If touching network code: prefer `httpx` async client patterns used in `mcp_stdio_server.py` for async flows and fall back to sync `requests` where consistent.
-- Preserve telemetry safety: do not allow server-initiated execution on the client.
-
-If anything is unclear, ask for the exact file and line to examine — include a short rationale for changes that affect startup order, networking, or security.
+## AILinux Client Specific
+- PyQt6 desktop app with JWT auth, WebSocket MCP, tier-based model access
+- API endpoints: /v1/client/login, /v1/client/models, /v1/client/chat, /v1/mcp/*
+- Beta code: AILINUX2026
