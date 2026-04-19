@@ -38,6 +38,11 @@ from .terminal_widget import TerminalWidget
 from .file_browser import FileBrowser
 from .desktop_panel import DesktopPanel
 
+# v5.0 "Brumo 2" widgets
+from .ai_search_widget import AISearchWidget
+from .token_budget_widget import TokenBudgetWidget
+from .ocr_capture import OCRQuickCapture
+
 # Import core components
 from ..core.api_client import APIClient
 from ..core.local_mcp import LocalMCPExecutor
@@ -718,6 +723,19 @@ class MainWindow(QMainWindow):
         action_mcp_status.triggered.connect(self._show_mcp_status)
         tools_menu.addAction(action_mcp_status)
 
+        # v5.0 "Brumo 2" — AI Search, OCR
+        action_ai_search = QAction(tr("🔍  AI Search..."), self)
+        action_ai_search.setShortcut("Ctrl+Alt+K")
+        action_ai_search.triggered.connect(self._open_ai_search)
+        tools_menu.addAction(action_ai_search)
+
+        action_ocr = QAction(tr("📷  Capture & OCR..."), self)
+        action_ocr.setShortcut("Ctrl+Alt+O")
+        action_ocr.triggered.connect(self._trigger_ocr)
+        tools_menu.addAction(action_ocr)
+
+        tools_menu.addSeparator()
+
         action_reconnect = QAction(tr("Reconnect MCP Node"), self)
         action_reconnect.triggered.connect(self._reconnect_mcp_node)
         tools_menu.addAction(action_reconnect)
@@ -1290,6 +1308,11 @@ class MainWindow(QMainWindow):
         self.tier_label = QLabel()
         self.tier_label.setStyleSheet("color: #4ade80; font-weight: bold;")
         self.statusbar.addPermanentWidget(self.tier_label)
+
+        # v5.0: Token budget widget (live, polls every 60s)
+        self.token_budget = TokenBudgetWidget(self.api_client)
+        self.token_budget.upgrade_requested.connect(self._open_upgrade_page)
+        self.statusbar.addPermanentWidget(self.token_budget)
 
         # Start ping timer
         self._ping_timer = QTimer(self)
@@ -3563,6 +3586,44 @@ CLI Agents: {len(self.cli_agents)}
         center_splitter_state = self.settings.value("centerSplitterState")
         if center_splitter_state and hasattr(self, 'center_splitter'):
             self.center_splitter.restoreState(center_splitter_state)
+
+    # =========================================================================
+    # v5.0 "Brumo 2" — new actions
+    # =========================================================================
+
+    def _open_ai_search(self):
+        """Open the AI Search window (Perplexity-style)."""
+        # Lazy: create once, reuse
+        if not hasattr(self, "_ai_search_window") or self._ai_search_window is None:
+            from PyQt6.QtWidgets import QMainWindow
+            win = QMainWindow(self)
+            win.setWindowTitle("AI Search — AILinux")
+            win.resize(820, 620)
+            widget = AISearchWidget(self.api_client, parent=win)
+            win.setCentralWidget(widget)
+            self._ai_search_window = win
+            self._ai_search_widget = widget
+        self._ai_search_window.show()
+        self._ai_search_window.raise_()
+        self._ai_search_window.activateWindow()
+        try:
+            self._ai_search_widget.query_edit.setFocus()
+        except Exception:
+            pass
+
+    def _trigger_ocr(self):
+        """Start OCR screenshot capture (Copa-lite inside client)."""
+        if not hasattr(self, "_ocr_capture") or self._ocr_capture is None:
+            self._ocr_capture = OCRQuickCapture(self, self.api_client)
+        self._ocr_capture.trigger()
+
+    def _open_upgrade_page(self):
+        """Open the AILinuX upgrade / shop page in the system browser."""
+        import webbrowser
+        try:
+            webbrowser.open("https://ailinux.me/shop/")
+        except Exception as e:
+            logger.warning(f"Could not open upgrade page: {e}")
 
     def closeEvent(self, event):
         """Save settings on close"""

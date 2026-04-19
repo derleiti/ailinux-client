@@ -379,3 +379,94 @@ class APIClient:
             "settings": settings,
             "merge": merge
         })
+
+
+    # =========================================================================
+    # v5.0 "Brumo 2" — new endpoints
+    # =========================================================================
+
+    def ai_search(
+        self,
+        query: str,
+        max_results: int = 5,
+        deep: bool = False,
+    ) -> Dict[str, Any]:
+        """AI-powered web search via TriForce backend.
+
+        Uses POST /v1/client/search. Backend handles search + LLM synthesis.
+        Returns dict with `answer`, `sources` (list of urls+snippets), `used_tokens`.
+        """
+        return self._request(
+            "POST",
+            "/v1/client/search",
+            {"query": query, "max_results": max_results, "deep": deep},
+            timeout=90.0,
+        )
+
+    def ocr_mistral(self, image_bytes: bytes, lang: str = "en") -> Dict[str, Any]:
+        """OCR via backend Mistral proxy.
+
+        POST /v1/client/ocr/mistral — multipart upload.
+        Returns {text, remaining, entitled}.
+        """
+        import base64
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        return self._request(
+            "POST",
+            "/v1/client/ocr/mistral",
+            {"image_base64": b64, "lang": lang},
+            timeout=45.0,
+        )
+
+    def ocr_status(self) -> Dict[str, Any]:
+        """Get current OCR quota status (demo remaining or entitled).
+
+        GET /v1/client/ocr/status
+        Returns {entitled, used, remaining, limit}.
+        """
+        try:
+            return self._request("GET", "/v1/client/ocr/status")
+        except Exception:
+            return {"entitled": False, "used": 0, "remaining": 0, "limit": 0}
+
+    def get_token_usage(self) -> Dict[str, Any]:
+        """Current user token usage.
+
+        GET /v1/client/tokens/usage
+        Returns {used_today, daily_limit, used_total, tier}.
+        """
+        try:
+            return self._request("GET", "/v1/client/tokens/usage")
+        except Exception:
+            return {"used_today": 0, "daily_limit": 0, "used_total": 0, "tier": self.tier}
+
+    def get_mcp_permissions(self) -> Dict[str, Any]:
+        """Which MCP tools current user is permitted to call.
+
+        GET /v1/client/mcp/permissions
+        """
+        try:
+            return self._request("GET", "/v1/client/mcp/permissions")
+        except Exception:
+            return {"tools": [], "tier": self.tier}
+
+    def get_changelog(self) -> str:
+        """Latest client changelog from backend.
+
+        GET /v1/client/update/changelog
+        """
+        try:
+            res = self._request("GET", "/v1/client/update/changelog")
+            return res.get("changelog", "") if isinstance(res, dict) else str(res)
+        except Exception:
+            return ""
+
+    def get_ollama_status(self) -> Dict[str, Any]:
+        """Ollama backend status (running? models available?).
+
+        GET /v1/client/ollama/status
+        """
+        try:
+            return self._request("GET", "/v1/client/ollama/status")
+        except Exception:
+            return {"running": False, "models": []}

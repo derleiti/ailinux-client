@@ -1,6 +1,6 @@
 # AILinux Client
 
-Version: `4.8.0-beta`
+Version: `5.0.0-alpha.1`
 
 Desktop client for the AILinux / TriForce platform.
 
@@ -13,6 +13,13 @@ AILinux Client is a PyQt6 desktop application for interacting with TriForce serv
 - MCP tool listing and execution
 - MCP node/websocket integration
 - update checks and backend error logging
+
+## What's new in v5.0 "Brumo 2"
+
+- **AI Search** (`Ctrl+Alt+K`) — Perplexity-style web search with source citations
+- **OCR Quick Capture** (`Ctrl+Alt+O`) — select region on screen → Mistral OCR → clipboard
+- **Token Budget Widget** — live tier + daily usage indicator in the status bar
+- **Cleaner codebase** — backup files removed, API client extended for 7 new endpoints
 
 ## Core Architecture
 
