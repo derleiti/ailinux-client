@@ -21,7 +21,7 @@ websockets>=11.0
 pydantic==2.4.0
 
 # Terminal emulation (VT100/pyte)
-pyte>=0.8.0
+pyte>=0.8.2
 
 # Encryption for secure settings storage
 cryptography==44.0.1
