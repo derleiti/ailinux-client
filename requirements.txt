@@ -45,4 +45,4 @@ python-pam>=2.0.0
 # rich>=13.0.0
 
 h11==0.16.0
-urllib3==2.6.3
+urllib3==2.7.0
