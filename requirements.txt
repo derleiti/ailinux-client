@@ -10,7 +10,7 @@ PyQt6-WebEngine>=6.4.0
 psutil>=5.9.0
 
 # HTTP/API client
-requests==2.32.4
+requests==2.33.0
 httpx>=0.24.0
 aiohttp==3.13.3
 
