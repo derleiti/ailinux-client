@@ -33,7 +33,7 @@ anyio==4.4.0
 python-dotenv>=1.0.0
 
 # Image processing (for icons)
-pillow==12.1.1
+pillow==12.3.0
 
 # Secure credential storage
 keyring>=24.0.0
