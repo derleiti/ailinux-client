@@ -3,7 +3,7 @@
 # Or use system packages: apt install python3-pyqt6 python3-psutil etc.
 
 # GUI Framework
-PyQt6>=6.4.0
+PyQt6>=6.11.0
 PyQt6-WebEngine>=6.4.0
 
 # System monitoring
