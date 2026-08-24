@@ -4,7 +4,7 @@
 
 # GUI Framework
 PyQt6>=6.11.0
-PyQt6-WebEngine>=6.4.0
+PyQt6-WebEngine>=6.11.0
 
 # System monitoring
 psutil>=7.2.2
