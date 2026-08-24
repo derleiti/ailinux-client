@@ -39,7 +39,7 @@ pillow==12.1.1
 keyring>=24.0.0
 
 # PAM authentication for lock screen (F5)
-python-pam>=2.0.0
+python-pam>=2.0.2
 
 # Optional: Rich terminal output for debugging
 # rich>=13.0.0
