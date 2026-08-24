@@ -36,7 +36,7 @@ python-dotenv>=1.2.3
 pillow==12.3.0
 
 # Secure credential storage
-keyring>=24.0.0
+keyring>=25.7.0
 
 # PAM authentication for lock screen (F5)
 python-pam>=2.0.0
