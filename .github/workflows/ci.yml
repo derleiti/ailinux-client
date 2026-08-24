@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install check dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff
+      - name: Compile Python sources
+        run: python -m compileall -q ailinux_client run.py run_mcp_daemon.py
+      - name: Critical Ruff checks
+        run: ruff check ailinux_client run.py run_mcp_daemon.py --select E9,F63,F7,F82
+      - name: Tests
+        run: |
+          echo "No unit test suite yet; static checks passed."
