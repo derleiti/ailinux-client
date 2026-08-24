@@ -4,7 +4,7 @@
 
 # GUI Framework
 PyQt6>=6.11.0
-PyQt6-WebEngine>=6.4.0
+PyQt6-WebEngine>=6.11.0
 
 # System monitoring
 psutil>=7.2.2
@@ -24,7 +24,7 @@ pydantic==2.13.4
 pyte>=0.8.2
 
 # Encryption for secure settings storage
-cryptography==44.0.1
+cryptography==50.0.0
 
 # Async support
 anyio==4.14.2
