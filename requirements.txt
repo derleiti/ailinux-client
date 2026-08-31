@@ -24,7 +24,7 @@ pydantic==2.13.4
 pyte>=0.8.2
 
 # Encryption for secure settings storage
-cryptography==50.0.0
+cryptography==50.0.1
 
 # Async support
 anyio==4.14.2
