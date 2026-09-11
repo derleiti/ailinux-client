@@ -6,6 +6,9 @@ on:
       - 'v*'  # Trigger bei Version-Tags (v3.0.2, etc.)
   workflow_dispatch:  # Manueller Trigger
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
