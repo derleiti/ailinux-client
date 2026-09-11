@@ -1,6 +1,6 @@
 # AILinux Client
 
-Version: `5.0.0-alpha.1`
+Version: `5.0.0-alpha.2`
 
 Desktop client for the AILinux / TriForce platform.
 
