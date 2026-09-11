@@ -1,11 +1,11 @@
 """AILinux Client Version"""
-VERSION = "5.0.0-alpha.2"
+VERSION = "5.0.0-alpha.3"
 BUILD_DATE = "20260419"
-API_VERSION = "5.0.0-alpha.2"
+API_VERSION = "5.0.0-alpha.3"
 CODENAME = "Brumo 2"
 
 CHANGELOG = """
-v5.0.0-alpha.2 "Brumo 2" (2026-09-11)
+v5.0.0-alpha.3 "Brumo 2" (2026-09-11)
 =====================================
 - NEW: AI Search (Ctrl+Alt+K) - Perplexity-style web search via /client/search
 - NEW: OCR Quick Capture (Ctrl+Alt+O) - Copa-lite, screenshot to text via Mistral

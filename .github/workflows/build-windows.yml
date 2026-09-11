@@ -33,6 +33,10 @@ jobs:
         VERSION=$(grep -E "^VERSION" ailinux_client/version.py | cut -d'"' -f2)
         echo "version=$VERSION" >> $GITHUB_OUTPUT
     
+    - name: Generate Windows icon
+      run: |
+        python -c "from PIL import Image; img=Image.open('icon.jpg'); img.save('icon.ico', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
+
     - name: Build Windows Executable
       run: |
         pyinstaller `
