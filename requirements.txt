@@ -27,7 +27,7 @@ pyte>=0.8.2
 cryptography==50.0.1
 
 # Async support
-anyio==4.15.0
+anyio==4.15.1
 
 # Environment variables
 python-dotenv>=1.2.3
