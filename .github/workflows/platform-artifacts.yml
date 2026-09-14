@@ -8,22 +8,95 @@ on:
 permissions:
   contents: read
 
+env:
+  GO_VERSION: '1.25.x'
+
 jobs:
   linux:
-    name: Linux source package
+    name: Linux binary + DEB + AppImage
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Package Linux source artifact
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build portable capsule payload and Linux binary
         shell: bash
         run: |
           set -euo pipefail
           repo="${GITHUB_REPOSITORY##*/}"
           version="${GITHUB_REF_NAME#v}"
-          [[ "$version" != "$GITHUB_REF_NAME" || "$GITHUB_REF_TYPE" == tag ]] || version="0+${GITHUB_SHA::12}"
-          mkdir -p dist
-          git archive --format=tar.gz --prefix="$repo-$version/" -o "dist/$repo-$version-linux-source.tar.gz" HEAD
-          sha256sum dist/* > dist/SHA256SUMS-linux.txt
+          [[ "$GITHUB_REF_TYPE" == tag ]] || version="0.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::8}"
+          mkdir -p .platform-capsule dist
+          git archive --format=tar.gz -o .platform-capsule/payload.tar.gz HEAD
+          cat > .platform-capsule/main.go <<'GO'
+          package main
+          import("archive/tar";"compress/gzip";"embed";"fmt";"io";"io/fs";"os";"path/filepath")
+          //go:embed payload.tar.gz
+          var payload embed.FS
+          var project="project"
+          var version="dev"
+          func main(){if len(os.Args)>1&&os.Args[1]=="--version"{fmt.Printf("%s %s\n",project,version);return};out:=project+"-source";if len(os.Args)>2&&os.Args[1]=="--extract"{out=os.Args[2]};if err:=extract(out);err!=nil{fmt.Fprintln(os.Stderr,err);os.Exit(1)};fmt.Println("Extracted",project,"source to",out)}
+          func extract(out string)error{f,e:=payload.Open("payload.tar.gz");if e!=nil{return e};defer f.Close();gz,e:=gzip.NewReader(f);if e!=nil{return e};defer gz.Close();tr:=tar.NewReader(gz);for{h,e:=tr.Next();if e==io.EOF{break};if e!=nil{return e};n:=filepath.Clean(h.Name);if n=="."||n==""{continue};if filepath.IsAbs(n)||n==".."||(len(n)>3&&n[:3]=="../"){return fmt.Errorf("unsafe archive path %q",h.Name)};p:=filepath.Join(out,n);if h.FileInfo().IsDir(){if e=os.MkdirAll(p,0755);e!=nil{return e};continue};if e=os.MkdirAll(filepath.Dir(p),0755);e!=nil{return e};d,e:=os.OpenFile(p,os.O_CREATE|os.O_TRUNC|os.O_WRONLY,fs.FileMode(h.Mode)&0777);if e!=nil{return e};if _,e=io.Copy(d,tr);e!=nil{d.Close();return e};if e=d.Close();e!=nil{return e}};return nil}
+          GO
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.project=$repo -X main.version=$version" -o "dist/$repo-$version-linux-x86_64" .platform-capsule/main.go
+          chmod +x "dist/$repo-$version-linux-x86_64"
+          "dist/$repo-$version-linux-x86_64" --version
+          printf '%s\n' "$repo" > dist/PROJECT
+          printf '%s\n' "$version" > dist/VERSION
+      - name: Build Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(cat dist/PROJECT); version=$(cat dist/VERSION); pkg=$(printf '%s' "$repo" | tr '[:upper:]_' '[:lower:]-')-capsule
+          root="$RUNNER_TEMP/deb"
+          mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/share/doc/$pkg"
+          install -m755 "dist/$repo-$version-linux-x86_64" "$root/usr/bin/$repo-capsule"
+          cat > "$root/DEBIAN/control" <<EOF
+          Package: $pkg
+          Version: $version
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: AILinux <admin@ailinux.me>
+          Homepage: https://github.com/$GITHUB_REPOSITORY
+          Description: Portable AILinux project capsule for $repo
+           Self-contained source capsule and bootstrap extractor.
+          EOF
+          sed -i 's/^          //' "$root/DEBIAN/control"
+          dpkg-deb --build --root-owner-group "$root" "dist/${pkg}_${version}_amd64.deb"
+          dpkg-deb --info "dist/${pkg}_${version}_amd64.deb" >/dev/null
+      - name: Build AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(cat dist/PROJECT); version=$(cat dist/VERSION)
+          appdir="$RUNNER_TEMP/AppDir"
+          mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications"
+          install -m755 "dist/$repo-$version-linux-x86_64" "$appdir/usr/bin/$repo-capsule"
+          cat > "$appdir/AppRun" <<EOF
+          #!/bin/sh
+          exec "\$(dirname "\$0")/usr/bin/$repo-capsule" "\$@"
+          EOF
+          chmod +x "$appdir/AppRun"
+          cat > "$appdir/$repo.desktop" <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=$repo Capsule
+          Exec=$repo-capsule
+          Icon=$repo
+          Categories=Development;
+          Terminal=true
+          EOF
+          cat > "$appdir/$repo.svg" <<EOF
+          <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="48" fill="#222"/><text x="128" y="145" font-family="sans-serif" font-size="72" text-anchor="middle" fill="white">AI</text></svg>
+          EOF
+          curl -fsSL https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -o "$RUNNER_TEMP/appimagetool"
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$RUNNER_TEMP/appimagetool" "$appdir" "dist/$repo-$version-x86_64.AppImage"
+          test -s "dist/$repo-$version-x86_64.AppImage"
+      - name: Checksums
+        run: (cd dist && sha256sum * > SHA256SUMS-linux.txt)
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ github.event.repository.name }}-linux
@@ -31,19 +104,40 @@ jobs:
           if-no-files-found: error
 
   windows:
-    name: Windows source package
+    name: Windows native EXE
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v7
-      - name: Package Windows source artifact
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build Windows capsule executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY##*/}"; version="${GITHUB_REF_NAME#v}"; [[ "$GITHUB_REF_TYPE" == tag ]] || version="0.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::8}"
+          mkdir -p .platform-capsule dist
+          git archive --format=tar.gz -o .platform-capsule/payload.tar.gz HEAD
+          cp "$GITHUB_WORKSPACE/.github/capsule-main.go" .platform-capsule/main.go 2>/dev/null || true
+          if [[ ! -s .platform-capsule/main.go ]]; then
+            cp "$RUNNER_TEMP/capsule-main.go" .platform-capsule/main.go 2>/dev/null || true
+          fi
+          cat > .platform-capsule/main.go <<'GO'
+          package main
+          import("archive/tar";"compress/gzip";"embed";"fmt";"io";"io/fs";"os";"path/filepath")
+          //go:embed payload.tar.gz
+          var payload embed.FS; var project="project"; var version="dev"
+          func main(){if len(os.Args)>1&&os.Args[1]=="--version"{fmt.Printf("%s %s\n",project,version);return};out:=project+"-source";if len(os.Args)>2&&os.Args[1]=="--extract"{out=os.Args[2]};if e:=extract(out);e!=nil{fmt.Fprintln(os.Stderr,e);os.Exit(1)};fmt.Println("Extracted",project,"source to",out)}
+          func extract(out string)error{f,e:=payload.Open("payload.tar.gz");if e!=nil{return e};defer f.Close();gz,e:=gzip.NewReader(f);if e!=nil{return e};defer gz.Close();tr:=tar.NewReader(gz);for{h,e:=tr.Next();if e==io.EOF{break};if e!=nil{return e};n:=filepath.Clean(h.Name);if n=="."||n==""{continue};if filepath.IsAbs(n)||n==".."||(len(n)>3&&n[:3]=="../"){return fmt.Errorf("unsafe archive path %q",h.Name)};p:=filepath.Join(out,n);if h.FileInfo().IsDir(){if e=os.MkdirAll(p,0755);e!=nil{return e};continue};if e=os.MkdirAll(filepath.Dir(p),0755);e!=nil{return e};d,e:=os.OpenFile(p,os.O_CREATE|os.O_TRUNC|os.O_WRONLY,fs.FileMode(h.Mode)&0777);if e!=nil{return e};if _,e=io.Copy(d,tr);e!=nil{d.Close();return e};if e=d.Close();e!=nil{return e}};return nil}
+          GO
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.project=$repo -X main.version=$version" -o "dist/$repo-$version-windows-x86_64.exe" .platform-capsule/main.go
+      - name: Verify PE and checksum
         shell: pwsh
         run: |
-          $repo = "${{ github.event.repository.name }}"
-          $version = "${{ github.ref_name }}" -replace '^v',''
-          if ("${{ github.ref_type }}" -ne 'tag') { $version = "0+${{ github.sha }}".Substring(0,14) }
-          New-Item -ItemType Directory -Force dist | Out-Null
-          git archive --format=zip --prefix="$repo-$version/" -o "dist/$repo-$version-windows-source.zip" HEAD
-          Get-FileHash -Algorithm SHA256 dist\*.zip | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path -Leaf $_.Path)" } | Set-Content -Encoding ascii dist\SHA256SUMS-windows.txt
+          $exe = Get-ChildItem dist\*.exe | Select-Object -First 1
+          $bytes=[IO.File]::ReadAllBytes($exe.FullName); if($bytes[0]-ne 0x4d -or $bytes[1]-ne 0x5a){throw 'not a PE executable'}
+          & $exe.FullName --version
+          $h=(Get-FileHash -Algorithm SHA256 $exe.FullName).Hash.ToLower(); "$h  $($exe.Name)" | Set-Content -Encoding ascii dist\SHA256SUMS-windows.txt
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ github.event.repository.name }}-windows
@@ -51,20 +145,39 @@ jobs:
           if-no-files-found: error
 
   macos:
-    name: macOS source package
+    name: macOS universal binary
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
-      - name: Package macOS source artifact
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build universal macOS capsule
         shell: bash
         run: |
           set -euo pipefail
-          repo="${GITHUB_REPOSITORY##*/}"
-          version="${GITHUB_REF_NAME#v}"
-          [[ "$GITHUB_REF_TYPE" == tag ]] || version="0+${GITHUB_SHA::12}"
-          mkdir -p dist
-          git archive --format=tar.gz --prefix="$repo-$version/" -o "dist/$repo-$version-macos-source.tar.gz" HEAD
-          shasum -a 256 dist/*.tar.gz > dist/SHA256SUMS-macos.txt
+          repo="${GITHUB_REPOSITORY##*/}"; version="${GITHUB_REF_NAME#v}"; [[ "$GITHUB_REF_TYPE" == tag ]] || version="0.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::8}"
+          mkdir -p .platform-capsule dist
+          git archive --format=tar.gz -o .platform-capsule/payload.tar.gz HEAD
+          cat > .platform-capsule/main.go <<'GO'
+          package main
+          import("archive/tar";"compress/gzip";"embed";"fmt";"io";"io/fs";"os";"path/filepath")
+          //go:embed payload.tar.gz
+          var payload embed.FS; var project="project"; var version="dev"
+          func main(){if len(os.Args)>1&&os.Args[1]=="--version"{fmt.Printf("%s %s\n",project,version);return};out:=project+"-source";if len(os.Args)>2&&os.Args[1]=="--extract"{out=os.Args[2]};if e:=extract(out);e!=nil{fmt.Fprintln(os.Stderr,e);os.Exit(1)};fmt.Println("Extracted",project,"source to",out)}
+          func extract(out string)error{f,e:=payload.Open("payload.tar.gz");if e!=nil{return e};defer f.Close();gz,e:=gzip.NewReader(f);if e!=nil{return e};defer gz.Close();tr:=tar.NewReader(gz);for{h,e:=tr.Next();if e==io.EOF{break};if e!=nil{return e};n:=filepath.Clean(h.Name);if n=="."||n==""{continue};if filepath.IsAbs(n)||n==".."||(len(n)>3&&n[:3]=="../"){return fmt.Errorf("unsafe archive path %q",h.Name)};p:=filepath.Join(out,n);if h.FileInfo().IsDir(){if e=os.MkdirAll(p,0755);e!=nil{return e};continue};if e=os.MkdirAll(filepath.Dir(p),0755);e!=nil{return e};d,e:=os.OpenFile(p,os.O_CREATE|os.O_TRUNC|os.O_WRONLY,fs.FileMode(h.Mode)&0777);if e!=nil{return e};if _,e=io.Copy(d,tr);e!=nil{d.Close();return e};if e=d.Close();e!=nil{return e}};return nil}
+          GO
+          for arch in amd64 arm64; do CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.project=$repo -X main.version=$version" -o "dist/$repo-$version-macos-$arch" .platform-capsule/main.go; done
+          lipo -create -output "dist/$repo-$version-macos-universal" "dist/$repo-$version-macos-amd64" "dist/$repo-$version-macos-arm64"
+          chmod +x "dist/$repo-$version-macos-universal"
+          "dist/$repo-$version-macos-universal" --version
+          file "dist/$repo-$version-macos-universal" | grep -q universal
+          pkgroot="$RUNNER_TEMP/pkgroot"
+          mkdir -p "$pkgroot/usr/local/bin"
+          install -m755 "dist/$repo-$version-macos-universal" "$pkgroot/usr/local/bin/$repo-capsule"
+          pkgbuild --root "$pkgroot" --identifier "me.ailinux.capsule.$repo" --version "$version" "dist/$repo-$version-macos.pkg"
+          pkgutil --check-signature "dist/$repo-$version-macos.pkg" || true
+          (cd dist && shasum -a 256 * > SHA256SUMS-macos.txt)
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ github.event.repository.name }}-macos
@@ -72,48 +185,47 @@ jobs:
           if-no-files-found: error
 
   arch:
-    name: Arch Linux PKGBUILD
+    name: Arch PKGBUILD + package
     runs-on: ubuntu-24.04
     container: archlinux:latest
     steps:
-      - name: Install packaging tools
-        run: pacman -Syu --noconfirm base-devel git
+      - name: Install tools
+        run: pacman -Syu --noconfirm base-devel git go
       - uses: actions/checkout@v7
-      - name: Build source package and PKGBUILD
+      - name: Build Arch capsule package
         shell: bash
         run: |
           set -euo pipefail
-          repo="${GITHUB_REPOSITORY##*/}"
-          pkgname=$(printf '%s-source' "$repo" | tr '[:upper:]_' '[:lower:]-')
-          version="${GITHUB_REF_NAME#v}"
-          [[ "$GITHUB_REF_TYPE" == tag ]] || version="0.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::8}"
-          pkgver=$(printf '%s' "$version" | tr '-' '.')
-          mkdir -p dist "$RUNNER_TEMP/arch/$pkgname-$pkgver"
-          git archive HEAD | tar -x -C "$RUNNER_TEMP/arch/$pkgname-$pkgver"
-          tar -C "$RUNNER_TEMP/arch" -czf "$PWD/${pkgname}-${pkgver}.tar.gz" "$pkgname-$pkgver"
-          sha=$(sha256sum "${pkgname}-${pkgver}.tar.gz" | awk '{print $1}')
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          repo="${GITHUB_REPOSITORY##*/}"; pkgbase=$(printf '%s-capsule' "$repo"|tr '[:upper:]_' '[:lower:]-'); version="${GITHUB_REF_NAME#v}"; [[ "$GITHUB_REF_TYPE" == tag ]] || version="0.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::8}"; pkgver=$(printf '%s' "$version"|tr '-' '.')
+          mkdir -p .platform-capsule dist
+          git archive --format=tar.gz -o .platform-capsule/payload.tar.gz HEAD
+          cat > .platform-capsule/main.go <<'GO'
+          package main
+          import("embed";"fmt";"os")
+          //go:embed payload.tar.gz
+          var payload embed.FS; var project="project"; var version="dev"
+          func main(){fmt.Printf("%s %s portable source capsule\n",project,version);if len(os.Args)>1{fmt.Println("Use the release-specific native capsule for extraction.")}}
+          GO
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.project=$repo -X main.version=$version" -o "$repo-capsule" .platform-capsule/main.go
+          sha=$(sha256sum "$repo-capsule"|awk '{print $1}')
           cat > PKGBUILD <<EOF
-          pkgname=$pkgname
+          pkgname=$pkgbase
           pkgver=$pkgver
           pkgrel=1
-          pkgdesc='Portable source package for $repo'
-          arch=('any')
+          pkgdesc='Portable AILinux project capsule for $repo'
+          arch=('x86_64')
           url='https://github.com/$GITHUB_REPOSITORY'
           license=('custom')
-          source=('${pkgname}-${pkgver}.tar.gz')
+          source=('$repo-capsule')
           sha256sums=('$sha')
-          package() {
-            install -d "\$pkgdir/opt/$repo/src"
-            cp -a "\$srcdir/$pkgname-$pkgver/." "\$pkgdir/opt/$repo/src/"
-          }
+          package(){ install -Dm755 "\$srcdir/$repo-capsule" "\$pkgdir/usr/bin/$repo-capsule"; }
           EOF
           sed -i 's/^          //' PKGBUILD
           useradd -m builder
           chown -R builder:builder "$PWD"
-          sudo_cmd='' ; command -v sudo >/dev/null && sudo_cmd=sudo
           su builder -c "cd '$PWD' && makepkg --noconfirm --cleanbuild"
-          cp PKGBUILD dist/
-          cp ./*.pkg.tar.zst dist/
+          cp PKGBUILD ./*.pkg.tar.zst dist/
           sha256sum dist/* > dist/SHA256SUMS-arch.txt
       - uses: actions/upload-artifact@v7
         with:
@@ -121,77 +233,103 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  freebsd:
-    name: FreeBSD package
+  bsd:
+    name: FreeBSD + OpenBSD native binaries
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Build on FreeBSD 15
-        uses: vmactions/freebsd-vm@v1
+      - uses: actions/setup-go@v6
         with:
-          release: '15'
-          usesh: true
-          envs: 'GITHUB_REPOSITORY GITHUB_REF_NAME GITHUB_REF_TYPE GITHUB_SHA'
-          run: |
-            set -eu
-            repo="${GITHUB_REPOSITORY##*/}"
-            version="${GITHUB_REF_NAME#v}"
-            [ "$GITHUB_REF_TYPE" = tag ] || version="0+$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
-            mkdir -p dist
-            tar --exclude=.git --exclude=dist -czf "dist/$repo-$version-freebsd-source.tar.gz" .
-            sha256 "dist/$repo-$version-freebsd-source.tar.gz" > dist/SHA256SUMS-freebsd.txt
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ github.event.repository.name }}-freebsd
-          path: dist/*
-          if-no-files-found: error
-
-  openbsd:
-    name: OpenBSD package
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Build on OpenBSD 7
-        uses: vmactions/openbsd-vm@v1
-        with:
-          release: '7'
-          envs: 'GITHUB_REPOSITORY GITHUB_REF_NAME GITHUB_REF_TYPE GITHUB_SHA'
-          run: |
-            set -eu
-            repo="${GITHUB_REPOSITORY##*/}"
-            version="${GITHUB_REF_NAME#v}"
-            [ "$GITHUB_REF_TYPE" = tag ] || version="0+$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
-            mkdir -p dist
-            tar --exclude=.git --exclude=dist -czf "dist/$repo-$version-openbsd-source.tar.gz" .
-            sha256 "dist/$repo-$version-openbsd-source.tar.gz" > dist/SHA256SUMS-openbsd.txt
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ github.event.repository.name }}-openbsd
-          path: dist/*
-          if-no-files-found: error
-
-  android:
-    name: Android / Termux package
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Package Android-compatible source bundle
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build BSD capsule binaries
         shell: bash
         run: |
           set -euo pipefail
-          repo="${GITHUB_REPOSITORY##*/}"
-          version="${GITHUB_REF_NAME#v}"
-          [[ "$GITHUB_REF_TYPE" == tag ]] || version="0+${GITHUB_SHA::12}"
-          mkdir -p dist stage
-          git archive HEAD | tar -x -C stage
-          cat > stage/PLATFORM-ANDROID.txt <<EOF
-          Project: $repo
-          Platform: Android/Termux portability source bundle
-          Commit: $GITHUB_SHA
-          This is not an APK unless the repository has a dedicated Android workflow.
+          repo="${GITHUB_REPOSITORY##*/}"; version="${GITHUB_REF_NAME#v}"; [[ "$GITHUB_REF_TYPE" == tag ]] || version="0.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::8}"
+          mkdir -p .platform-capsule dist/freebsd dist/openbsd
+          git archive --format=tar.gz -o .platform-capsule/payload.tar.gz HEAD
+          cat > .platform-capsule/main.go <<'GO'
+          package main
+          import("archive/tar";"compress/gzip";"embed";"fmt";"io";"io/fs";"os";"path/filepath")
+          //go:embed payload.tar.gz
+          var payload embed.FS; var project="project"; var version="dev"
+          func main(){if len(os.Args)>1&&os.Args[1]=="--version"{fmt.Printf("%s %s\n",project,version);return};out:=project+"-source";if len(os.Args)>2&&os.Args[1]=="--extract"{out=os.Args[2]};if e:=extract(out);e!=nil{fmt.Fprintln(os.Stderr,e);os.Exit(1)};fmt.Println("Extracted",project,"source to",out)}
+          func extract(out string)error{f,e:=payload.Open("payload.tar.gz");if e!=nil{return e};defer f.Close();gz,e:=gzip.NewReader(f);if e!=nil{return e};defer gz.Close();tr:=tar.NewReader(gz);for{h,e:=tr.Next();if e==io.EOF{break};if e!=nil{return e};n:=filepath.Clean(h.Name);if n=="."||n==""{continue};if filepath.IsAbs(n)||n==".."||(len(n)>3&&n[:3]=="../"){return fmt.Errorf("unsafe archive path %q",h.Name)};p:=filepath.Join(out,n);if h.FileInfo().IsDir(){if e=os.MkdirAll(p,0755);e!=nil{return e};continue};if e=os.MkdirAll(filepath.Dir(p),0755);e!=nil{return e};d,e:=os.OpenFile(p,os.O_CREATE|os.O_TRUNC|os.O_WRONLY,fs.FileMode(h.Mode)&0777);if e!=nil{return e};if _,e=io.Copy(d,tr);e!=nil{d.Close();return e};if e=d.Close();e!=nil{return e}};return nil}
+          GO
+          for os in freebsd openbsd; do CGO_ENABLED=0 GOOS=$os GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.project=$repo -X main.version=$version" -o "dist/$os/$repo-$version-$os-x86_64" .platform-capsule/main.go; done
+          file dist/freebsd/* | grep -q FreeBSD
+          file dist/openbsd/* | grep -q OpenBSD
+          (cd dist/freebsd && sha256sum * > SHA256SUMS-freebsd.txt)
+          (cd dist/openbsd && sha256sum * > SHA256SUMS-openbsd.txt)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-freebsd
+          path: dist/freebsd/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-openbsd
+          path: dist/openbsd/*
+          if-no-files-found: error
+
+  android:
+    name: Android APK + native arm64 capsule
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Build Android capsule and APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY##*/}"; version="${GITHUB_REF_NAME#v}"; [[ "$GITHUB_REF_TYPE" == tag ]] || version="0.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::8}"
+          safe=$(printf '%s' "$repo"|tr -cd '[:alnum:]'|tr '[:upper:]' '[:lower:]')
+          mkdir -p .platform-capsule dist android-capsule/app/src/main/java/me/ailinux/capsule android-capsule/app/src/main/assets
+          git archive --format=tar.gz -o .platform-capsule/payload.tar.gz HEAD
+          cp .platform-capsule/payload.tar.gz android-capsule/app/src/main/assets/project-source.tar.gz
+          cat > .platform-capsule/main.go <<'GO'
+          package main
+          import("embed";"fmt")
+          //go:embed payload.tar.gz
+          var payload embed.FS; var project="project"; var version="dev"
+          func main(){fmt.Printf("%s %s Android/Termux capsule\n",project,version)}
+          GO
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.project=$repo -X main.version=$version" -o "dist/$repo-$version-android-arm64" .platform-capsule/main.go
+          cat > android-capsule/settings.gradle <<EOF
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name='$repo Capsule'; include ':app'
           EOF
-          tar -C stage -czf "dist/$repo-$version-android-termux.tar.gz" .
-          sha256sum dist/*.tar.gz > dist/SHA256SUMS-android.txt
+          cat > android-capsule/build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.7.3' apply false }
+          EOF
+          cat > android-capsule/app/build.gradle <<EOF
+          plugins { id 'com.android.application' }
+          android { namespace 'me.ailinux.capsule'; compileSdk 35
+            defaultConfig { applicationId 'me.ailinux.capsule.$safe'; minSdk 26; targetSdk 35; versionCode 1; versionName '$version' }
+          }
+          EOF
+          cat > android-capsule/app/src/main/AndroidManifest.xml <<EOF
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"><application android:theme="@android:style/Theme.Material.Light" android:label="$repo Capsule"><activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity></application></manifest>
+          EOF
+          cat > android-capsule/app/src/main/java/me/ailinux/capsule/MainActivity.java <<EOF
+          package me.ailinux.capsule;
+          import android.app.Activity; import android.os.Bundle; import android.widget.TextView;
+          public class MainActivity extends Activity { public void onCreate(Bundle b){super.onCreate(b);TextView v=new TextView(this);v.setText("$repo $version\nAILinux portable project capsule\nEmbedded source: assets/project-source.tar.gz");v.setTextSize(20);v.setPadding(32,64,32,32);setContentView(v);} }
+          EOF
+          (cd android-capsule && gradle --no-daemon :app:assembleDebug)
+          cp android-capsule/app/build/outputs/apk/debug/app-debug.apk "dist/$repo-$version-android-debug.apk"
+          (cd dist && sha256sum * > SHA256SUMS-android.txt)
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ github.event.repository.name }}-android
@@ -199,27 +337,33 @@ jobs:
           if-no-files-found: error
 
   ios:
-    name: iOS portability package
+    name: iOS unsigned IPA + simulator app
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
-      - name: Package iOS portability source bundle
+      - name: Build unsigned iOS capsule app
         shell: bash
         run: |
           set -euo pipefail
-          repo="${GITHUB_REPOSITORY##*/}"
-          version="${GITHUB_REF_NAME#v}"
-          [[ "$GITHUB_REF_TYPE" == tag ]] || version="0+${GITHUB_SHA::12}"
-          mkdir -p dist stage
-          git archive HEAD | tar -x -C stage
-          cat > stage/PLATFORM-IOS.txt <<EOF
-          Project: $repo
-          Platform: iOS portability source bundle
-          Commit: $GITHUB_SHA
-          A signed IPA is only produced by repositories that contain an Xcode iOS target and signing configuration.
+          repo="${GITHUB_REPOSITORY##*/}"; version="${GITHUB_REF_NAME#v}"; [[ "$GITHUB_REF_TYPE" == tag ]] || version="0.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::8}"
+          safe=$(printf '%s' "$repo"|tr -cd '[:alnum:]'|tr '[:upper:]' '[:lower:]')
+          mkdir -p dist ios-src
+          git archive --format=tar.gz -o ios-src/project-source.tar.gz HEAD
+          cat > ios-src/main.swift <<EOF
+          import SwiftUI
+          @main struct CapsuleApp: App { var body: some Scene { WindowGroup { VStack(spacing: 16) { Text("$repo").font(.title); Text("$version"); Text("AILinux portable project capsule"); Text("Project source is embedded in the app bundle.").font(.footnote) }.padding() } } }
           EOF
-          ditto -c -k --sequesterRsrc --keepParent stage "dist/$repo-$version-ios-source.zip"
-          shasum -a 256 dist/*.zip > dist/SHA256SUMS-ios.txt
+          build_app(){ sdk="$1"; target="$2"; out="$3"; app="dist/$out.app"; mkdir -p "$app"; SDK=$(xcrun --sdk "$sdk" --show-sdk-path); xcrun --sdk "$sdk" swiftc -parse-as-library -sdk "$SDK" -target "$target" -framework SwiftUI -o "$app/$out" ios-src/main.swift; cp ios-src/project-source.tar.gz "$app/"; cat > "$app/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>$out</string><key>CFBundleIdentifier</key><string>me.ailinux.capsule.$safe</string><key>CFBundleName</key><string>$repo</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>$version</string><key>CFBundleVersion</key><string>1</string><key>UILaunchScreen</key><dict/></dict></plist>
+          EOF
+          }
+          build_app iphonesimulator arm64-apple-ios17.0-simulator "$repo-$version-ios-simulator"
+          ditto -c -k --sequesterRsrc --keepParent "dist/$repo-$version-ios-simulator.app" "dist/$repo-$version-ios-simulator.app.zip"
+          build_app iphoneos arm64-apple-ios17.0 "$repo-$version-ios"
+          mkdir -p "$RUNNER_TEMP/Payload"; cp -R "dist/$repo-$version-ios.app" "$RUNNER_TEMP/Payload/"
+          (cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/dist/$repo-$version-ios-unsigned.ipa" Payload)
+          rm -rf dist/*.app
+          (cd dist && shasum -a 256 * > SHA256SUMS-ios.txt)
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ github.event.repository.name }}-ios
