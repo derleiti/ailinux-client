@@ -1,0 +1,227 @@
+name: Platform Artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux source package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Package Linux source artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY##*/}"
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$version" != "$GITHUB_REF_NAME" || "$GITHUB_REF_TYPE" == tag ]] || version="0+${GITHUB_SHA::12}"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="$repo-$version/" -o "dist/$repo-$version-linux-source.tar.gz" HEAD
+          sha256sum dist/* > dist/SHA256SUMS-linux.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-linux
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows source package
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - name: Package Windows source artifact
+        shell: pwsh
+        run: |
+          $repo = "${{ github.event.repository.name }}"
+          $version = "${{ github.ref_name }}" -replace '^v',''
+          if ("${{ github.ref_type }}" -ne 'tag') { $version = "0+${{ github.sha }}".Substring(0,14) }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          git archive --format=zip --prefix="$repo-$version/" -o "dist/$repo-$version-windows-source.zip" HEAD
+          Get-FileHash -Algorithm SHA256 dist\*.zip | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path -Leaf $_.Path)" } | Set-Content -Encoding ascii dist\SHA256SUMS-windows.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-windows
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS source package
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Package macOS source artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY##*/}"
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == tag ]] || version="0+${GITHUB_SHA::12}"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="$repo-$version/" -o "dist/$repo-$version-macos-source.tar.gz" HEAD
+          shasum -a 256 dist/*.tar.gz > dist/SHA256SUMS-macos.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-macos
+          path: dist/*
+          if-no-files-found: error
+
+  arch:
+    name: Arch Linux PKGBUILD
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - name: Install packaging tools
+        run: pacman -Syu --noconfirm base-devel git
+      - uses: actions/checkout@v7
+      - name: Build source package and PKGBUILD
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY##*/}"
+          pkgname=$(printf '%s-source' "$repo" | tr '[:upper:]_' '[:lower:]-')
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == tag ]] || version="0.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::8}"
+          pkgver=$(printf '%s' "$version" | tr '-' '.')
+          mkdir -p dist "$RUNNER_TEMP/arch/$pkgname-$pkgver"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/arch/$pkgname-$pkgver"
+          tar -C "$RUNNER_TEMP/arch" -czf "$PWD/${pkgname}-${pkgver}.tar.gz" "$pkgname-$pkgver"
+          sha=$(sha256sum "${pkgname}-${pkgver}.tar.gz" | awk '{print $1}')
+          cat > PKGBUILD <<EOF
+          pkgname=$pkgname
+          pkgver=$pkgver
+          pkgrel=1
+          pkgdesc='Portable source package for $repo'
+          arch=('any')
+          url='https://github.com/$GITHUB_REPOSITORY'
+          license=('custom')
+          source=('${pkgname}-${pkgver}.tar.gz')
+          sha256sums=('$sha')
+          package() {
+            install -d "\$pkgdir/opt/$repo/src"
+            cp -a "\$srcdir/$pkgname-$pkgver/." "\$pkgdir/opt/$repo/src/"
+          }
+          EOF
+          sed -i 's/^          //' PKGBUILD
+          useradd -m builder
+          chown -R builder:builder "$PWD"
+          sudo_cmd='' ; command -v sudo >/dev/null && sudo_cmd=sudo
+          su builder -c "cd '$PWD' && makepkg --noconfirm --cleanbuild"
+          cp PKGBUILD dist/
+          cp ./*.pkg.tar.zst dist/
+          sha256sum dist/* > dist/SHA256SUMS-arch.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-arch
+          path: dist/*
+          if-no-files-found: error
+
+  freebsd:
+    name: FreeBSD package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build on FreeBSD 15
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '15'
+          usesh: true
+          envs: 'GITHUB_REPOSITORY GITHUB_REF_NAME GITHUB_REF_TYPE GITHUB_SHA'
+          run: |
+            set -eu
+            repo="${GITHUB_REPOSITORY##*/}"
+            version="${GITHUB_REF_NAME#v}"
+            [ "$GITHUB_REF_TYPE" = tag ] || version="0+$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
+            mkdir -p dist
+            tar --exclude=.git --exclude=dist -czf "dist/$repo-$version-freebsd-source.tar.gz" .
+            sha256 "dist/$repo-$version-freebsd-source.tar.gz" > dist/SHA256SUMS-freebsd.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-freebsd
+          path: dist/*
+          if-no-files-found: error
+
+  openbsd:
+    name: OpenBSD package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build on OpenBSD 7
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: '7'
+          envs: 'GITHUB_REPOSITORY GITHUB_REF_NAME GITHUB_REF_TYPE GITHUB_SHA'
+          run: |
+            set -eu
+            repo="${GITHUB_REPOSITORY##*/}"
+            version="${GITHUB_REF_NAME#v}"
+            [ "$GITHUB_REF_TYPE" = tag ] || version="0+$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
+            mkdir -p dist
+            tar --exclude=.git --exclude=dist -czf "dist/$repo-$version-openbsd-source.tar.gz" .
+            sha256 "dist/$repo-$version-openbsd-source.tar.gz" > dist/SHA256SUMS-openbsd.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-openbsd
+          path: dist/*
+          if-no-files-found: error
+
+  android:
+    name: Android / Termux package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Package Android-compatible source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY##*/}"
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == tag ]] || version="0+${GITHUB_SHA::12}"
+          mkdir -p dist stage
+          git archive HEAD | tar -x -C stage
+          cat > stage/PLATFORM-ANDROID.txt <<EOF
+          Project: $repo
+          Platform: Android/Termux portability source bundle
+          Commit: $GITHUB_SHA
+          This is not an APK unless the repository has a dedicated Android workflow.
+          EOF
+          tar -C stage -czf "dist/$repo-$version-android-termux.tar.gz" .
+          sha256sum dist/*.tar.gz > dist/SHA256SUMS-android.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-android
+          path: dist/*
+          if-no-files-found: error
+
+  ios:
+    name: iOS portability package
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Package iOS portability source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY##*/}"
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == tag ]] || version="0+${GITHUB_SHA::12}"
+          mkdir -p dist stage
+          git archive HEAD | tar -x -C stage
+          cat > stage/PLATFORM-IOS.txt <<EOF
+          Project: $repo
+          Platform: iOS portability source bundle
+          Commit: $GITHUB_SHA
+          A signed IPA is only produced by repositories that contain an Xcode iOS target and signing configuration.
+          EOF
+          ditto -c -k --sequesterRsrc --keepParent stage "dist/$repo-$version-ios-source.zip"
+          shasum -a 256 dist/*.zip > dist/SHA256SUMS-ios.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-ios
+          path: dist/*
+          if-no-files-found: error
