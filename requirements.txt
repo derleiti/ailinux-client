@@ -24,10 +24,10 @@ pydantic==2.13.5
 pyte>=0.8.2
 
 # Encryption for secure settings storage
-cryptography==50.0.1
+cryptography==50.0.2
 
 # Async support
-anyio==4.15.0
+anyio==4.15.1
 
 # Environment variables
 python-dotenv>=1.2.3
@@ -45,4 +45,4 @@ python-pam>=2.0.2
 # rich>=13.0.0
 
 h11==0.16.0
-urllib3==2.7.0
+urllib3==2.8.0
