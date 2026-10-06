@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QToolBar, QPushButton, QLabel, QStatusBar,
     QSplitter, QTabWidget, QMenuBar, QMenu,
     QMessageBox, QApplication, QSizePolicy,
-    QFileDialog, QDialog, QTextBrowser
+    QFileDialog, QDialog, QTextBrowser, QPlainTextEdit
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QSettings
 from PyQt6.QtGui import QAction, QKeySequence, QIcon, QShortcut, QScreen
@@ -3530,16 +3530,55 @@ CLI Agents: {len(self.cli_agents)}
         )
 
     def _report_bug(self):
-        """Open bug report dialog/link"""
-        import webbrowser
-        reply = QMessageBox.question(
-            self,
-            "Bug melden",
-            "Möchten Sie einen Bug auf GitHub melden?\n\nDies öffnet Ihren Browser.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            webbrowser.open("https://github.com/ailinux/client/issues/new")
+        """Submit a redacted diagnostics report to the central AILinux bug inbox."""
+        from concurrent.futures import ThreadPoolExecutor
+        from ..bug_reporter import submit_manual
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("AILinux Client · Bug melden")
+        dialog.setMinimumWidth(600)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Redigierte AILinux-Client-Diagnosen werden an bugs@ailinux.me gesendet. Tokens, Passwörter und Pair-Codes werden entfernt."))
+        message = QPlainTextEdit(dialog)
+        message.setPlaceholderText("Was ist passiert? Was hast du direkt davor gemacht? (optional)")
+        layout.addWidget(message)
+        submit = QPushButton("Submit diagnostics", dialog)
+        state = QLabel("", dialog)
+        layout.addWidget(submit)
+        layout.addWidget(state)
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ailinux-bug-report")
+        timer = QTimer(dialog)
+        timer.setInterval(120)
+        future = {"value": None}
+
+        def do_submit():
+            submit.setEnabled(False)
+            state.setText("Wird gesendet…")
+            future["value"] = pool.submit(submit_manual, message.toPlainText())
+            timer.start()
+
+        def poll():
+            job = future.get("value")
+            if job is None or not job.done():
+                return
+            timer.stop()
+            submit.setEnabled(True)
+            try:
+                result = job.result()
+                if result.get("ok"):
+                    state.setText("Report gesendet.")
+                    message.clear()
+                elif result.get("queued"):
+                    state.setText("Offline/Server nicht erreichbar – Report wurde lokal für Retry gespeichert.")
+                else:
+                    state.setText("Report konnte nicht gesendet werden.")
+            except Exception as exc:
+                state.setText(f"Reportfehler: {exc}")
+
+        submit.clicked.connect(do_submit)
+        timer.timeout.connect(poll)
+        dialog.finished.connect(lambda _code: pool.shutdown(wait=False, cancel_futures=True))
+        dialog.exec()
 
     def _update_user_label(self):
         """Update user label and tier status"""

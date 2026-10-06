@@ -257,6 +257,9 @@ def is_autostart_enabled() -> bool:
 
 def main():
     """Main entry point"""
+    from ailinux_client.bug_reporter import install as install_bug_reporter
+    from ailinux_client.version import VERSION
+    install_bug_reporter(app="AILinux Client", repo="ailinux-client", version=VERSION, channel="desktop")
     args = parse_args()
     env_true = {"1", "true", "yes", "on"}
 
