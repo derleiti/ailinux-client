@@ -22,7 +22,10 @@ class ModelInfo:
     name: str
     provider: str
     category: str  # local, free_cloud, premium
-    free: bool = True
+    free: bool = False
+    free_status: str = "unknown"
+    free_endpoint: bool = False
+    capabilities: List[str] = field(default_factory=list)
     
     def __hash__(self):
         return hash(self.id)
@@ -77,8 +80,10 @@ class ModelSyncManager:
         data = {
             "tier": self._cache.tier,
             "models": [
-                {"id": m.id, "name": m.name, "provider": m.provider, 
-                 "category": m.category, "free": m.free}
+                {"id": m.id, "name": m.name, "provider": m.provider,
+                 "category": m.category, "free": m.free,
+                 "free_status": m.free_status, "free_endpoint": m.free_endpoint,
+                 "capabilities": m.capabilities}
                 for m in self._cache.models
             ],
             "categories": self._cache.categories,
@@ -125,18 +130,27 @@ class ModelSyncManager:
                 model_list = response.get("models", [])
                 tier = response.get("tier", "guest")
                 
-                # Konvertiere zu ModelInfo Objekten
+                # IDs supplied by /client/models are already tier-authorized.
+                # Only matching backend details may enrich them, never grant access.
+                allowed = {m if isinstance(m, str) else m.get("id") for m in model_list
+                           if isinstance(m, (str, dict))}
+                details = {m.get("id"): m for m in response.get("model_details", [])
+                           if isinstance(m, dict) and m.get("id") in allowed}
                 models = []
                 for m in model_list:
                     if isinstance(m, str):
-                        # Model ist nur ID-String
-                        provider = m.split("/")[0] if "/" in m else "unknown"
+                        info = details.get(m, {})
+                        provider = str(info.get("provider") or m.split("/", 1)[0])
+                        local = provider == "ollama" and ":cloud" not in m and not m.endswith("-cloud")
+                        free = info.get("free_badge") is True
                         models.append(ModelInfo(
                             id=m,
-                            name=m.split("/")[-1] if "/" in m else m,
+                            name=str(info.get("name") or m.split("/")[-1]),
                             provider=provider,
-                            category="cloud" if "-cloud" in m else "local",
-                            free=tier in ("guest", "registered")
+                            category="local" if local else ("free_cloud" if free else "premium"),
+                            free=free, free_status=str(info.get("free_status") or "unknown"),
+                            free_endpoint=info.get("free_endpoint") is True,
+                            capabilities=list(info.get("capabilities") or []),
                         ))
                     elif isinstance(m, dict):
                         # Model ist bereits Dict
@@ -145,7 +159,10 @@ class ModelSyncManager:
                             name=m.get("name", m.get("id", "")),
                             provider=m.get("provider", "unknown"),
                             category=m.get("category", "cloud"),
-                            free=m.get("free", True)
+                            free=m.get("free_badge") is True,
+                            free_status=str(m.get("free_status") or "unknown"),
+                            free_endpoint=m.get("free_endpoint") is True,
+                            capabilities=list(m.get("capabilities") or []),
                         ))
                 
                 # Kategorien zählen
