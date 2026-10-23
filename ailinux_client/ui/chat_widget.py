@@ -729,7 +729,12 @@ class ChatWidget(QWidget):
                     tier_name = result.get("tier_name", "Free")
                     backend = result.get("backend", "ollama")
 
-                    # Group by provider
+                    # Server is authoritative: never infer a Free entitlement
+                    # from the NVIDIA Build Free Endpoint marketing label.
+                    details_by_id = {
+                        item.get('id'): item for item in result.get('model_details', [])
+                        if isinstance(item, dict) and item.get('id')
+                    }
                     ollama_models = []
                     cloud_models = []
 
@@ -740,11 +745,15 @@ class ChatWidget(QWidget):
                             provider = backend
                             name = model_id
 
+                        metadata = details_by_id.get(model_id, {})
+                        free_badge = bool(metadata.get('free_badge', False))
                         model_data = {
                             'id': model_id,
-                            'name': name,
+                            'name': (name + ' [Free]' if free_badge else name),
                             'provider': provider,
-                            'local': (provider == "ollama"),
+                            'local': (provider == "ollama" and ':cloud' not in model_id and not model_id.endswith('-cloud')),
+                            'free_endpoint': bool(metadata.get('free_endpoint', False)),
+                            'free_status': metadata.get('free_status', 'unknown'),
                         }
 
                         if provider == "ollama":
