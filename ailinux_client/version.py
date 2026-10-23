@@ -1,11 +1,17 @@
 """AILinux Client Version"""
-VERSION = "5.0.0-alpha.3"
-BUILD_DATE = "20260419"
-API_VERSION = "5.0.0-alpha.3"
+VERSION = "5.0.0-alpha.4"
+BUILD_DATE = "20261023"
+API_VERSION = "5.0.0-alpha.4"
 CODENAME = "Brumo 2"
 
 CHANGELOG = """
-v5.0.0-alpha.3 "Brumo 2" (2026-09-11)
+v5.0.0-alpha.4 "Brumo 2" (2026-10-23)
+=====================================
+- Load current TriForce model IDs, capabilities and tier metadata without stale hardcoded free claims.
+- Distinguish local Ollama from Ollama Cloud and gate Free labels on explicit backend validation.
+- Preserve model metadata in offline cache with regression coverage.
+
+v5.0.0-alpha.4 "Brumo 2" (2026-09-11)
 =====================================
 - NEW: AI Search (Ctrl+Alt+K) - Perplexity-style web search via /client/search
 - NEW: OCR Quick Capture (Ctrl+Alt+O) - Copa-lite, screenshot to text via Mistral
