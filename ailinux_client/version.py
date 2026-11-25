@@ -1,10 +1,16 @@
 """AILinux Client Version"""
-VERSION = "5.0.0-alpha.4"
-BUILD_DATE = "20261023"
-API_VERSION = "5.0.0-alpha.4"
+VERSION = "5.0.0-alpha.5"
+BUILD_DATE = "20261111"
+API_VERSION = "5.0.0-alpha.5"
 CODENAME = "Brumo 2"
 
 CHANGELOG = """
+v5.0.0-alpha.5 "Brumo 2" (2026-11-11)
+=====================================
+- Update aiohttp, pydantic, anyio and minimum websockets after successful CI/security reviews.
+- Require Windows and Linux binaries to build before publishing tag-triggered downloads.
+- Verify release artifact signatures and publish SHA-256 checksums.
+
 v5.0.0-alpha.4 "Brumo 2" (2026-10-23)
 =====================================
 - Load current TriForce model IDs, capabilities and tier metadata without stale hardcoded free claims.
