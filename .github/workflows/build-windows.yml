@@ -12,6 +12,8 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     
     steps:
     - name: Checkout Code
@@ -76,26 +78,8 @@ jobs:
       with:
         name: AILinux-Client-Windows-${{ steps.version.outputs.version }}
         path: dist/AILinux-Client.exe
+        if-no-files-found: error
     
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v3
-      with:
-        files: dist/AILinux-Client.exe
-        name: AILinux Client ${{ steps.version.outputs.version }}
-        body: |
-          ## AILinux Client for Windows
-          
-          ### Installation
-          1. Download `AILinux-Client.exe`
-          2. Ausführen (kein Installer nötig)
-          
-          ### Anforderungen
-          - Windows 10 (1809+) oder Windows 11
-          - Internet-Verbindung für API-Zugriff
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   # Optional: Linux Build parallel
   build-linux:
     runs-on: ubuntu-latest
@@ -119,3 +103,49 @@ jobs:
       with:
         name: AILinux-Client-Linux
         path: dist/ailinux-client
+        if-no-files-found: error
+
+  publish-verified-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: AILinux-Client-Windows-${{ needs.build-windows.outputs.version }}
+          path: verified/windows
+      - uses: actions/download-artifact@v8
+        with:
+          name: AILinux-Client-Linux
+          path: verified/linux
+      - name: Verify version and binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_REF_NAME#v}"
+          actual=$(python3 -c 'from ailinux_client.version import VERSION; print(VERSION)')
+          test "$expected" = "$actual"
+          test "${{ needs.build-windows.outputs.version }}" = "$expected"
+          test -s verified/windows/AILinux-Client.exe
+          test -s verified/linux/ailinux-client
+          python3 - <<'VERIFY'
+          from pathlib import Path
+          exe=Path('verified/windows/AILinux-Client.exe')
+          elf=Path('verified/linux/ailinux-client')
+          assert exe.open('rb').read(2)==b'MZ', 'Windows EXE header invalid'
+          assert elf.open('rb').read(4)==b'\x7fELF', 'Linux ELF header invalid'
+          print('RELEASE_BINARIES_VALIDATED')
+          VERIFY
+          mkdir -p release
+          cp verified/windows/AILinux-Client.exe "release/AILinux-Client-${expected}-windows-x86_64.exe"
+          cp verified/linux/ailinux-client "release/ailinux-client-${expected}-linux-x86_64"
+          (cd release && sha256sum * > SHA256SUMS.txt)
+      - name: Publish after successful platform builds
+        uses: softprops/action-gh-release@v3
+        with:
+          name: AILinux Client ${{ needs.build-windows.outputs.version }}
+          prerelease: true
+          files: release/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
